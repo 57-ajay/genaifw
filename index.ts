@@ -1,5 +1,8 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { systemPrompt } from "./prompts/systemPrompt";
+import { GoogleGenAI } from "@google/genai";
+import { createAgent } from "./agent/agent";
+import { bootstrapIntents } from "./intents/bootstrap";
+import { getOrCreateUser } from "./state/memoryStore";
+import * as readline from "readline";
 
 const ai = new GoogleGenAI({
     vertexai: true,
@@ -7,39 +10,63 @@ const ai = new GoogleGenAI({
     location: "us-central1",
 });
 
+bootstrapIntents();
+const agent = createAgent(ai);
 
-const run = async () => {
+const USER_ID = "cli-user";
 
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [
-            {
-                role: "model",
-                parts: [{ text: systemPrompt() }]
-            },
-            {
-                role: "user",
-                parts: [{ text: "i want to verify my aadhar" }]
-            }
-        ],
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    intent: {
-                        type: Type.STRING,
-                        enum: ["verifyAadharIntent", "generalIntent"],
-                        description: "Classified user intent"
-                    }
-                },
-                required: ["intent"]
-            }
-        }
-    });
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+});
 
-    return JSON.parse(response.text!) as { intent: string }
+const prompt = () => rl.question("\nyou > ", handleInput);
 
-}
+const handleInput = async (input: string) => {
+    const trimmed = input.trim();
 
-run().then(x => console.log(x.intent))
+    if (!trimmed) {
+        prompt();
+        return;
+    }
+
+    if (trimmed === "/quit" || trimmed === "/exit") {
+        console.log("\nGoodbye");
+        rl.close();
+        process.exit(0);
+    }
+
+    if (trimmed === "/state") {
+        const state = getOrCreateUser(USER_ID);
+        console.log("\n── session state ──");
+        console.log(JSON.stringify(state, null, 2));
+        prompt();
+        return;
+    }
+
+    if (trimmed === "/help") {
+        console.log(`
+Commands:
+  /state   – dump current session state
+  /help    – show this help
+  /quit    – exit
+        `.trim());
+        prompt();
+        return;
+    }
+
+    try {
+        const reply = await agent.run(USER_ID, trimmed);
+        console.log(`\nraahi > ${reply}`);
+    } catch (err: any) {
+        console.error(`\n[error] ${err.message}`);
+    }
+
+    prompt();
+};
+
+console.log("╔══════════════════════════════════════════╗");
+console.log("║       RAAHI – Dynamic AI Agent           ║");
+console.log("║  type /help for commands, /quit to exit   ║");
+console.log("╚══════════════════════════════════════════╝");
+prompt();
