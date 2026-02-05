@@ -1,7 +1,8 @@
 import { ai, MODEL } from "./config";
-import type { Session, Part } from "./types";
+import type { Part, Session } from "./types";
 import { saveSession } from "./store";
 import { getTool, getDeclarations } from "./tools";
+import type { FunctionCall } from "@google/genai/web";
 
 const SYSTEM_PROMPT = `You are RAAHI, a helpful assistant for Cabswale.
 
@@ -25,10 +26,8 @@ STEP 3: After calling fetchFeaturePrompt, follow the instructions it returns exa
 - Be concise and helpful.`;
 
 // Base tools every session starts with
-
 export const BASE_TOOLS = ["fetchKnowledgeBase", "fetchFeaturePrompt"];
 
-//  Resolve one user turn
 
 const MAX_DEPTH = 15;
 
@@ -41,7 +40,7 @@ async function step(session: Session, depth: number): Promise<string> {
         return "I've done too many steps. Let's try again — can you rephrase?";
     }
 
-    const result = await ai.models.generateContent({
+    const stream = await ai.models.generateContentStream({
         model: MODEL,
         contents: session.history as any,
         config: {
@@ -50,59 +49,56 @@ async function step(session: Session, depth: number): Promise<string> {
         },
     });
 
-    const parts = result.candidates?.[0]?.content?.parts;
-    if (!parts?.length) return "No response from model.";
+    let text = "";
+    let fnCall: FunctionCall | null = null;
 
-    // Push entire model turn
-    session.history.push({ role: "model", parts: parts as Part[] });
+    for await (const chunk of stream) {
+        const parts = chunk.candidates?.[0]?.content?.parts ?? [];
 
-    // Find function call if any
-    const fnPart = parts.find((p: any) => p.functionCall);
-    const textPart = parts.find((p: any) => p.text);
+        for (const p of parts) {
+            if (p.text) {
+                text += p.text;
+            }
+            if (p.functionCall && !fnCall) {
+                fnCall = p.functionCall;
+            }
+        }
+    }
 
-    // ── Function call -> execute -> recurse
-    if (fnPart && "functionCall" in fnPart) {
-        const { name, args } = fnPart.functionCall as {
-            name: string;
-            args: Record<string, string>;
-        };
+    session.history.push({
+        role: "model",
+        parts: fnCall
+            ? [{ functionCall: fnCall }] as Part[]
+            : [{ text }],
+    });
 
-        console.log(`  🔧 ${name}(${JSON.stringify(args)})`);
+    if (fnCall) {
+        const fn = getTool(fnCall.name!);
+        const args =
+            fnCall.args && typeof fnCall.args === "object"
+                ? (fnCall.args as Record<string, string>)
+                : {};
+        const { msg, addTools } = fn
+            ? await fn(args)
+            : { msg: `Error: tool "${fnCall.name}" not found.` };
 
-        const fn = getTool(name);
-        let content: string;
-
-        if (fn) {
-            const { msg, addTools } = await fn(args);
-            content = msg;
-
-            if (addTools?.length) {
-                for (const t of addTools) {
-                    if (!session.activeTools.includes(t)) {
-                        session.activeTools.push(t);
-                        console.log(`  ⊕ Tool unlocked: ${t}`);
-                    }
+        if (addTools) {
+            for (const t of addTools) {
+                if (!session.activeTools.includes(t)) {
+                    session.activeTools.push(t);
                 }
             }
-        } else {
-            content = `Error: tool "${name}" not found.`;
         }
 
         session.history.push({
             role: "function",
-            parts: [{ functionResponse: { name, response: { content } } }],
+            parts: [{ functionResponse: { name: fnCall.name!, response: { content: msg } } }],
         });
 
         await saveSession(session);
         return step(session, depth + 1);
     }
 
-    // ── Text only -> done
-    if (textPart && "text" in textPart) {
-        await saveSession(session);
-        return textPart.text as string;
-    }
-
     await saveSession(session);
-    return "I'm not sure how to respond to that.";
+    return text || "I'm not sure how to respond to that.";
 }

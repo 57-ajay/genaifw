@@ -82,7 +82,7 @@ export async function ensureKBIndex(): Promise<void> {
             },
             { ON: "HASH", PREFIX: KB_PREFIX }
         );
-        console.log("✓ RediSearch index created: " + KB_INDEX_NAME);
+        console.log("RediSearch index created: " + KB_INDEX_NAME);
     }
 }
 
@@ -320,7 +320,7 @@ export async function seedDefaults(): Promise<void> {
 
     const existing = await getAllKBEntries();
     if (existing.length > 0) {
-        console.log(`✓ KB has ${existing.length} entries, skipping seed`);
+        console.log(`KB has ${existing.length} entries, skipping seed`);
         return;
     }
 
@@ -379,5 +379,5 @@ FLOW:
         tools: ["searchCabsTool"],
     });
 
-    console.log("✓ Default KB + features seeded with embeddings");
+    console.log("Default KB + features seeded with embeddings");
 }
