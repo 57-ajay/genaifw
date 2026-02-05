@@ -3,6 +3,11 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "check": "bun x tsc --noEmit",
+    "serve": "bun run src/serve.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
@@ -10,6 +15,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@google/genai": "^1.39.0"
+    "@google/genai": "^1.40.0",
+    "redis": "^5.10.0"
   }
 }
