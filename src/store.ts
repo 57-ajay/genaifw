@@ -18,6 +18,7 @@ export async function disconnectRedis() {
     await client?.quit();
 }
 
+const SESSION_TTL = 60 * 5; // 5 mins
 
 const sessionKey = (id: string) => `session:${id}`;
 
@@ -28,7 +29,7 @@ export async function getSession(id: string): Promise<Session | null> {
 
 export async function saveSession(session: Session): Promise<void> {
     session.updatedAt = Date.now();
-    await client.set(sessionKey(session.id), JSON.stringify(session));
+    await client.set(sessionKey(session.id), JSON.stringify(session), { EX: SESSION_TTL });
 }
 
 export async function deleteSession(id: string): Promise<void> {
