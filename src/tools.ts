@@ -2,11 +2,11 @@ import { Type } from "@google/genai";
 import type { ToolDeclaration, ToolFn, KBEntry } from "./types";
 import { searchKnowledgeBase, getFeatureDetail } from "./store";
 
-// Tool Registry
+//  Tool Registry
 // To add a new tool:
 //   1. Add declaration in `declarations`
 //   2. Add implementation in `implementations`
-// That's it. The agent picks it up automatically. boobs boom fucky fucky
+// That's it. The agent picks it up automatically. boom fuck
 
 const declarations: Record<string, ToolDeclaration> = {
 
@@ -69,21 +69,6 @@ const declarations: Record<string, ToolDeclaration> = {
                 date: { type: Type.STRING, description: "Travel date (optional)" },
             },
             required: ["pickup", "destination"],
-        },
-    },
-
-    createTripTool: {
-        name: "createTripTool",
-        description: "Create a new trip booking with pickup, drop, and travel dates",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {
-                pickup: { type: Type.STRING, description: "Pickup location" },
-                drop: { type: Type.STRING, description: "Drop/destination location" },
-                startDate: { type: Type.STRING, description: "Start date (YYYY-MM-DD)" },
-                returnDate: { type: Type.STRING, description: "Return date (YYYY-MM-DD), empty if one-way" },
-            },
-            required: ["pickup", "drop", "startDate"],
         },
     },
 };
@@ -154,19 +139,6 @@ const implementations: Record<string, ToolFn> = {
                 ],
             }),
         };
-    },
-
-    createTripTool: async (args) => {
-        const trip = {
-            pickup: args["pickup"],
-            drop: args["drop"],
-            startDate: args["startDate"],
-            returnDate: args["returnDate"] || null,
-            type: args["returnDate"] ? "round-trip" : "one-way",
-            id: `TRIP-${Date.now()}`,
-        };
-        console.log(`  -> Trip created:`, trip);
-        return { msg: JSON.stringify(trip) };
     },
 };
 

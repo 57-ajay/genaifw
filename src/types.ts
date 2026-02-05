@@ -1,6 +1,5 @@
 import type { Type } from "@google/genai";
 
-// ─── Knowledge Base ────────────────────────────────────────
 
 export type KBEntry =
     | { type: "info"; desc: string }
@@ -13,7 +12,6 @@ export interface FeatureDetail {
     tools: string[];
 }
 
-// ─── Tool System ───────────────────────────────────────────
 
 export interface ToolDeclaration {
     name: string;
@@ -35,7 +33,6 @@ export interface ToolResult {
     addTools?: string[];
 }
 
-// ─── Session ───────────────────────────────────────────────
 
 export interface Session {
     id: string;
@@ -55,7 +52,6 @@ export type Part =
     | { functionCall: { name: string; args: Record<string, string> } }
     | { functionResponse: { name: string; response: { content: string } } };
 
-// ─── API ───────────────────────────────────────────────────
 
 export interface APIResponse<T = unknown> {
     ok: boolean;

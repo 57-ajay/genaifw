@@ -9,7 +9,7 @@ import {
 import { resolve, BASE_TOOLS } from "./agent";
 import * as readline from "readline";
 
-const SESSION_ID = process.env.SESSION_ID ?? "cli-user-69";
+const SESSION_ID = process.env.SESSION_ID ?? JSON.stringify(Date.now());
 
 async function main() {
     await connectRedis(process.env.REDIS_URL ?? "redis://localhost:6379");

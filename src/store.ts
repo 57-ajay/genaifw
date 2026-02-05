@@ -1,5 +1,9 @@
-import { createClient, type RedisClientType } from "redis";
+import {
+    createClient,
+    type RedisClientType,
+} from "redis";
 import type { Session, KBEntry, FeatureDetail } from "./types";
+import { embed, VECTOR_DIM } from "./embeddings";
 
 let client: RedisClientType;
 
@@ -12,10 +16,6 @@ export async function connectRedis(url = "redis://localhost:6379") {
 
 export async function disconnectRedis() {
     await client?.quit();
-}
-
-export function getClient() {
-    return client;
 }
 
 
@@ -45,16 +45,91 @@ export function newSession(id: string, baseTools: string[]): Session {
     };
 }
 
-// Knowledge Base CRUD
-// Each entry stored as kb:entry:<id> with an index set at kb:index
+//  KNOWLEDGE BASE — Redis Hash + RediSearch Vector Index
+//
+//  Each KB entry is a Redis Hash at key  kb:entry:<id>
+//  Fields: type, desc, featureName, tools (JSON), embedding (VECTOR)
+//
+//  RediSearch index "idx:kb" enables KNN vector similarity search.
 
 const KB_PREFIX = "kb:entry:";
-const KB_INDEX = "kb:index";
+const KB_INDEX_NAME = "idx:kb";
+
+/**
+ * Create the RediSearch index for KB entries.
+ * Safe to call multiple times — skips if index already exists.
+ */
+export async function ensureKBIndex(): Promise<void> {
+    try {
+        await client.ft.info(KB_INDEX_NAME);
+        // Index exists, nothing to do
+    } catch {
+        // Index doesn't exist, create it
+        await client.ft.create(
+            KB_INDEX_NAME,
+            {
+                type: { type: "TAG" as const },
+                desc: { type: "TEXT" as const },
+                featureName: { type: "TAG" as const },
+                embedding: {
+                    type: "VECTOR" as const,
+                    ALGORITHM: "HNSW" as const,
+                    TYPE: "FLOAT32",
+                    DIM: VECTOR_DIM,
+                    DISTANCE_METRIC: "COSINE",
+                },
+            },
+            { ON: "HASH", PREFIX: KB_PREFIX }
+        );
+        console.log("✓ RediSearch index created: " + KB_INDEX_NAME);
+    }
+}
+
+function makeKBId(): string {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Convert a KBEntry to flat hash fields for Redis. */
+function kbToHash(
+    entry: KBEntry,
+    embeddingBuf: Buffer
+): Record<string, string | Buffer> {
+    const fields: Record<string, string | Buffer> = {
+        type: entry.type,
+        desc: entry.desc,
+        embedding: embeddingBuf,
+    };
+    if (entry.type === "feature") {
+        fields["featureName"] = entry.featureName;
+        fields["tools"] = JSON.stringify(entry.tools);
+    }
+    return fields;
+}
+
+/** Reconstruct KBEntry from Redis hash fields. */
+function hashToKB(fields: Record<string, string>): KBEntry {
+    if (fields["type"] === "feature") {
+        return {
+            type: "feature",
+            desc: fields["desc"] ?? "",
+            featureName: fields["featureName"] ?? "",
+            tools: JSON.parse(fields["tools"] ?? "[]"),
+        };
+    }
+    return { type: "info", desc: fields["desc"] ?? "" };
+}
+
+//  KB CRUD
 
 export async function addKBEntry(entry: KBEntry): Promise<string> {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    await client.set(`${KB_PREFIX}${id}`, JSON.stringify(entry));
-    await client.sAdd(KB_INDEX, id);
+    const id = makeKBId();
+    const textToEmbed =
+        entry.type === "feature"
+            ? `${entry.desc} ${entry.featureName}`
+            : entry.desc;
+    const embeddingBuf = await embed(textToEmbed);
+    const fields = kbToHash(entry, embeddingBuf);
+    await client.hSet(`${KB_PREFIX}${id}`, fields);
     return id;
 }
 
@@ -66,51 +141,95 @@ export async function addKBEntries(entries: KBEntry[]): Promise<string[]> {
     return ids;
 }
 
-export async function getAllKBEntries(): Promise<KBEntry[]> {
-    const ids = await client.sMembers(KB_INDEX);
-    if (!ids.length) return [];
-    const entries: KBEntry[] = [];
-    for (const id of ids) {
-        const raw = await client.get(`${KB_PREFIX}${id}`);
-        if (raw) entries.push(JSON.parse(raw));
+export async function getKBEntry(id: string): Promise<KBEntry | null> {
+    const raw = await client.hGetAll(`${KB_PREFIX}${id}`);
+    if (!raw || !raw["type"]) return null;
+    return hashToKB(raw);
+}
+
+export async function updateKBEntry(
+    id: string,
+    entry: KBEntry
+): Promise<boolean> {
+    const exists = await client.exists(`${KB_PREFIX}${id}`);
+    if (!exists) return false;
+    const textToEmbed =
+        entry.type === "feature"
+            ? `${entry.desc} ${entry.featureName}`
+            : entry.desc;
+    const embeddingBuf = await embed(textToEmbed);
+
+    // Delete old hash and write new one (clean replace)
+    await client.del(`${KB_PREFIX}${id}`);
+    await client.hSet(`${KB_PREFIX}${id}`, kbToHash(entry, embeddingBuf));
+    return true;
+}
+
+export async function deleteKBEntry(id: string): Promise<boolean> {
+    const removed = await client.del(`${KB_PREFIX}${id}`);
+    return removed > 0;
+}
+
+export async function getAllKBEntries(): Promise<
+    Array<KBEntry & { id: string }>
+> {
+    const results: Array<KBEntry & { id: string }> = [];
+    for await (const keys of client.scanIterator({ MATCH: `${KB_PREFIX}*` })) {
+        const batch = Array.isArray(keys) ? keys : [keys];
+        for (const key of batch) {
+            const fields = await client.hGetAll(key as string);
+            if (fields["type"]) {
+                const id = (key as string).replace(KB_PREFIX, "");
+                results.push({ ...hashToKB(fields), id });
+            }
+        }
     }
-    return entries;
+    return results;
 }
 
 export async function clearKB(): Promise<void> {
-    const ids = await client.sMembers(KB_INDEX);
-    for (const id of ids) {
-        await client.del(`${KB_PREFIX}${id}`);
+    for await (const keys of client.scanIterator({ MATCH: `${KB_PREFIX}*` })) {
+        const batch = Array.isArray(keys) ? keys : [keys];
+        for (const key of batch) {
+            await client.del(key as string);
+        }
     }
-    await client.del(KB_INDEX);
 }
 
-/**
- * Word-level search across KB entries.
- * Splits query into words, matches if ANY word appears in the entry desc/featureName.
- * This replaces the broken substring match that failed on "verify aadhar" vs "aadhaar".
- *
- * In production: replace with RediSearch FT.SEARCH + vector embeddings.
- */
-export async function searchKnowledgeBase(query: string): Promise<KBEntry[]> {
-    const all = await getAllKBEntries();
-    if (!all.length) return [];
+//  KB Vector Search
 
-    const words = query
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length > 2);
+export async function searchKnowledgeBase(
+    query: string,
+    topK = 5
+): Promise<KBEntry[]> {
+    const queryBuf = await embed(query);
 
-    if (!words.length) return all;
+    const results = await client.ft.search(
+        KB_INDEX_NAME,
+        `*=>[KNN ${topK} @embedding $BLOB AS score]`,
+        {
+            PARAMS: { BLOB: queryBuf },
+            SORTBY: { BY: "score", DIRECTION: "ASC" },
+            DIALECT: 2,
+            RETURN: ["type", "desc", "featureName", "tools", "score"],
+        }
+    );
 
-    return all.filter((entry) => {
-        const haystack = entry.desc.toLowerCase() +
-            (entry.type === "feature" ? ` ${entry.featureName.toLowerCase()}` : "");
-        return words.some((w) => haystack.includes(w));
-    });
+    if (!results.total) return [];
+
+    return results.documents
+        .filter((doc) => {
+            // Filter out low-relevance results (cosine distance > 0.5)
+            const score = parseFloat((doc.value["score"] as string) ?? "1");
+            return score < 0.5;
+        })
+        .map((doc) => {
+            const v = doc.value as Record<string, string>;
+            return hashToKB(v);
+        });
 }
 
-//  Features CRUD
+//  FEATURES — simple key-value (no vector search needed)
 
 const FEAT_PREFIX = "feature:";
 const FEAT_INDEX = "feature:index";
@@ -128,6 +247,25 @@ export async function getFeatureDetail(
 ): Promise<FeatureDetail | null> {
     const raw = await client.get(`${FEAT_PREFIX}${name}`);
     return raw ? JSON.parse(raw) : null;
+}
+
+export async function updateFeature(detail: FeatureDetail): Promise<boolean> {
+    const exists = await client.exists(`${FEAT_PREFIX}${detail.featureName}`);
+    if (!exists) return false;
+    await client.set(
+        `${FEAT_PREFIX}${detail.featureName}`,
+        JSON.stringify(detail)
+    );
+    return true;
+}
+
+export async function deleteFeature(name: string): Promise<boolean> {
+    const removed = await client.del(`${FEAT_PREFIX}${name}`);
+    if (removed > 0) {
+        await client.sRem(FEAT_INDEX, name);
+        return true;
+    }
+    return false;
 }
 
 export async function getAllFeatures(): Promise<FeatureDetail[]> {
@@ -148,28 +286,61 @@ export async function clearFeatures(): Promise<void> {
     await client.del(FEAT_INDEX);
 }
 
-// Seed defaults
+/**
+ * Cleans up stale keys from previous versions that used a different
+ * storage format (plain strings instead of hashes). Without this,
+ * Redis throws WRONGTYPE errors when we try hSet on old string keys.
+ */
+async function cleanStaleKeys(): Promise<void> {
+    const prefixes = [KB_PREFIX, "kb:index"];
+    for (const pattern of prefixes) {
+        for await (const keys of client.scanIterator({
+            MATCH: pattern.endsWith("*") ? pattern : `${pattern}*`,
+        })) {
+            const batch = Array.isArray(keys) ? keys : [keys];
+            for (const key of batch) {
+                const keyType = await client.type(key as string);
+                // If it's a leftover string key where we now expect a hash, delete it
+                if (keyType === "string" && (key as string).startsWith(KB_PREFIX)) {
+                    await client.del(key as string);
+                }
+                // Also clean up the old kb:index set if it exists
+                if ((key as string) === "kb:index") {
+                    await client.del(key as string);
+                }
+            }
+        }
+    }
+}
 
 export async function seedDefaults(): Promise<void> {
-    const existing = await client.sMembers(KB_INDEX);
+    await ensureKBIndex();
+    await cleanStaleKeys();
+
+    const existing = await getAllKBEntries();
     if (existing.length > 0) {
-        console.log("✓ KB already populated, skipping seed");
+        console.log(`✓ KB has ${existing.length} entries, skipping seed`);
         return;
     }
+
+    console.log("⏳ Seeding KB + features (generating embeddings)...");
 
     await addKBEntries([
         { type: "info", desc: "Cabswale is a driver and user matching system" },
         { type: "info", desc: "Users can book outstation trips" },
-        { type: "info", desc: "Drivers can set availability and preferred routes" },
+        {
+            type: "info",
+            desc: "Drivers can set availability and preferred routes",
+        },
         {
             type: "feature",
-            desc: "Verify aadhaar card via aadhaar number",
+            desc: "Verify aadhaar card via aadhaar number for identity verification",
             featureName: "aadhar_verification",
             tools: ["sendAadharOtpTool", "verifyAadharOtpTool"],
         },
         {
             type: "feature",
-            desc: "Book an outstation cab trip",
+            desc: "Book an outstation cab trip with pickup drop and dates",
             featureName: "book_trip",
             tools: ["searchCabsTool"],
         },
@@ -207,5 +378,5 @@ FLOW:
         tools: ["searchCabsTool"],
     });
 
-    console.log("✓ Default KB + features seeded");
+    console.log("✓ Default KB + features seeded with embeddings");
 }

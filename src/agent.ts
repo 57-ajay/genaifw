@@ -1,17 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
+import { ai, MODEL } from "./config";
 import type { Session, Part } from "./types";
 import { saveSession } from "./store";
 import { getTool, getDeclarations } from "./tools";
-
-const PROJECT_ID = process.env.GCP_PROJECT ?? "cabswale-ai";
-const LOCATION = process.env.GCP_LOCATION ?? "us-central1";
-const MODEL = process.env.MODEL ?? "gemini-2.5-flash";
-
-const ai = new GoogleGenAI({
-    project: PROJECT_ID,
-    location: LOCATION,
-    vertexai: true,
-});
 
 const SYSTEM_PROMPT = `You are RAAHI, a helpful assistant for Cabswale.
 
@@ -34,9 +24,11 @@ STEP 3: After calling fetchFeaturePrompt, follow the instructions it returns exa
 - If the user already provided info (like an Aadhaar number), don't ask again — use it.
 - Be concise and helpful.`;
 
+// Base tools every session starts with
 
 export const BASE_TOOLS = ["fetchKnowledgeBase", "fetchFeaturePrompt"];
 
+//  Resolve one user turn
 
 const MAX_DEPTH = 15;
 
@@ -61,11 +53,14 @@ async function step(session: Session, depth: number): Promise<string> {
     const parts = result.candidates?.[0]?.content?.parts;
     if (!parts?.length) return "No response from model.";
 
+    // Push entire model turn
     session.history.push({ role: "model", parts: parts as Part[] });
 
+    // Find function call if any
     const fnPart = parts.find((p: any) => p.functionCall);
     const textPart = parts.find((p: any) => p.text);
 
+    // ── Function call -> execute -> recurse
     if (fnPart && "functionCall" in fnPart) {
         const { name, args } = fnPart.functionCall as {
             name: string;
@@ -102,6 +97,7 @@ async function step(session: Session, depth: number): Promise<string> {
         return step(session, depth + 1);
     }
 
+    // ── Text only -> done
     if (textPart && "text" in textPart) {
         await saveSession(session);
         return textPart.text as string;
