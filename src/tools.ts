@@ -2,17 +2,12 @@ import { Type } from "@google/genai";
 import type { ToolDeclaration, ToolFn, KBEntry } from "./types";
 import { searchKnowledgeBase, getFeatureDetail } from "./store";
 
-//  Tool Registry
-// To add a new tool:
-//   1. Add declaration in `declarations`
-//   2. Add implementation in `implementations`
-// That's it. The agent picks it up automatically. boom fuck
 
 const declarations: Record<string, ToolDeclaration> = {
 
     fetchKnowledgeBase: {
         name: "fetchKnowledgeBase",
-        description: "Search knowledge base for info or available features matching the user query. ALWAYS call this first for any user request.",
+        description: "Search knowledge base for info or features matching user query. ALWAYS call this first.",
         parameters: {
             type: Type.OBJECT,
             properties: {
@@ -24,11 +19,11 @@ const declarations: Record<string, ToolDeclaration> = {
 
     fetchFeaturePrompt: {
         name: "fetchFeaturePrompt",
-        description: "Get full instructions and tools for a feature. Call this with the featureName when fetchKnowledgeBase returns a matching feature.",
+        description: "Get full instructions and tools for a feature. Call with featureName from KB results.",
         parameters: {
             type: Type.OBJECT,
             properties: {
-                featureName: { type: Type.STRING, description: "Exact featureName key from knowledge base results" },
+                featureName: { type: Type.STRING, description: "Exact featureName from knowledge base" },
             },
             required: ["featureName"],
         },
@@ -78,18 +73,16 @@ function formatKBResults(entries: KBEntry[]): string {
     if (!entries.length) return "No relevant info found in knowledge base.";
 
     const lines: string[] = [];
-
     for (const e of entries) {
         if (e.type === "info") {
             lines.push(`[INFO] ${e.desc}`);
         } else {
             lines.push(
                 `[FEATURE] featureName="${e.featureName}" — ${e.desc}\n` +
-                `  -> You MUST call fetchFeaturePrompt(featureName="${e.featureName}") to get full instructions before proceeding.`
+                `  -> Call fetchFeaturePrompt(featureName="${e.featureName}") to get instructions.`
             );
         }
     }
-
     return lines.join("\n\n");
 }
 
@@ -101,10 +94,16 @@ const implementations: Record<string, ToolFn> = {
         return { msg: formatKBResults(results) };
     },
 
-    fetchFeaturePrompt: async (args) => {
+    fetchFeaturePrompt: async (args, session) => {
         const name = args["featureName"] ?? "";
         const detail = await getFeatureDetail(name);
         if (!detail) return { msg: `Feature "${name}" not found.` };
+
+        session.matchedAction = {
+            actionType: detail.actionType,
+            dataSchema: detail.dataSchema,
+        };
+
         return {
             msg: detail.prompt,
             addTools: detail.tools,

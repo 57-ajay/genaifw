@@ -18,8 +18,8 @@ export async function disconnectRedis() {
     await client?.quit();
 }
 
-const SESSION_TTL = 60 * 5; // 5 mins
 
+const SESSION_TTL = 60 * 5;
 const sessionKey = (id: string) => `session:${id}`;
 
 export async function getSession(id: string): Promise<Session | null> {
@@ -41,31 +41,20 @@ export function newSession(id: string, baseTools: string[]): Session {
         id,
         history: [],
         activeTools: [...baseTools],
+        matchedAction: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
     };
 }
 
-//  KNOWLEDGE BASE — Redis Hash + RediSearch Vector Index
-//
-//  Each KB entry is a Redis Hash at key  kb:entry:<id>
-//  Fields: type, desc, featureName, tools (JSON), embedding (VECTOR)
-//
-//  RediSearch index "idx:kb" enables KNN vector similarity search.
 
 const KB_PREFIX = "kb:entry:";
 const KB_INDEX_NAME = "idx:kb";
 
-/**
- * Create the RediSearch index for KB entries.
- * Safe to call multiple times — skips if index already exists.
- */
 export async function ensureKBIndex(): Promise<void> {
     try {
         await client.ft.info(KB_INDEX_NAME);
-        // Index exists, nothing to do
     } catch {
-        // Index doesn't exist, create it
         await client.ft.create(
             KB_INDEX_NAME,
             {
@@ -90,11 +79,7 @@ function makeKBId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Convert a KBEntry to flat hash fields for Redis. */
-function kbToHash(
-    entry: KBEntry,
-    embeddingBuf: Buffer
-): Record<string, string | Buffer> {
+function kbToHash(entry: KBEntry, embeddingBuf: Buffer): Record<string, string | Buffer> {
     const fields: Record<string, string | Buffer> = {
         type: entry.type,
         desc: entry.desc,
@@ -107,7 +92,6 @@ function kbToHash(
     return fields;
 }
 
-/** Reconstruct KBEntry from Redis hash fields. */
 function hashToKB(fields: Record<string, string>): KBEntry {
     if (fields["type"] === "feature") {
         return {
@@ -120,7 +104,6 @@ function hashToKB(fields: Record<string, string>): KBEntry {
     return { type: "info", desc: fields["desc"] ?? "" };
 }
 
-//  KB CRUD
 
 export async function addKBEntry(entry: KBEntry): Promise<string> {
     const id = makeKBId();
@@ -129,16 +112,13 @@ export async function addKBEntry(entry: KBEntry): Promise<string> {
             ? `${entry.desc} ${entry.featureName}`
             : entry.desc;
     const embeddingBuf = await embed(textToEmbed);
-    const fields = kbToHash(entry, embeddingBuf);
-    await client.hSet(`${KB_PREFIX}${id}`, fields);
+    await client.hSet(`${KB_PREFIX}${id}`, kbToHash(entry, embeddingBuf));
     return id;
 }
 
 export async function addKBEntries(entries: KBEntry[]): Promise<string[]> {
     const ids: string[] = [];
-    for (const entry of entries) {
-        ids.push(await addKBEntry(entry));
-    }
+    for (const entry of entries) ids.push(await addKBEntry(entry));
     return ids;
 }
 
@@ -148,10 +128,7 @@ export async function getKBEntry(id: string): Promise<KBEntry | null> {
     return hashToKB(raw);
 }
 
-export async function updateKBEntry(
-    id: string,
-    entry: KBEntry
-): Promise<boolean> {
+export async function updateKBEntry(id: string, entry: KBEntry): Promise<boolean> {
     const exists = await client.exists(`${KB_PREFIX}${id}`);
     if (!exists) return false;
     const textToEmbed =
@@ -159,21 +136,16 @@ export async function updateKBEntry(
             ? `${entry.desc} ${entry.featureName}`
             : entry.desc;
     const embeddingBuf = await embed(textToEmbed);
-
-    // Delete old hash and write new one (clean replace)
     await client.del(`${KB_PREFIX}${id}`);
     await client.hSet(`${KB_PREFIX}${id}`, kbToHash(entry, embeddingBuf));
     return true;
 }
 
 export async function deleteKBEntry(id: string): Promise<boolean> {
-    const removed = await client.del(`${KB_PREFIX}${id}`);
-    return removed > 0;
+    return (await client.del(`${KB_PREFIX}${id}`)) > 0;
 }
 
-export async function getAllKBEntries(): Promise<
-    Array<KBEntry & { id: string }>
-> {
+export async function getAllKBEntries(): Promise<Array<KBEntry & { id: string }>> {
     const results: Array<KBEntry & { id: string }> = [];
     for await (const keys of client.scanIterator({ MATCH: `${KB_PREFIX}*` })) {
         const batch = Array.isArray(keys) ? keys : [keys];
@@ -191,18 +163,12 @@ export async function getAllKBEntries(): Promise<
 export async function clearKB(): Promise<void> {
     for await (const keys of client.scanIterator({ MATCH: `${KB_PREFIX}*` })) {
         const batch = Array.isArray(keys) ? keys : [keys];
-        for (const key of batch) {
-            await client.del(key as string);
-        }
+        for (const key of batch) await client.del(key as string);
     }
 }
 
-//  KB Vector Search
 
-export async function searchKnowledgeBase(
-    query: string,
-    topK = 5
-): Promise<KBEntry[]> {
+export async function searchKnowledgeBase(query: string, topK = 5): Promise<KBEntry[]> {
     const queryBuf = await embed(query);
 
     const results = await client.ft.search(
@@ -220,32 +186,22 @@ export async function searchKnowledgeBase(
 
     return results.documents
         .filter((doc) => {
-            // Filter out low-relevance results (cosine distance > 0.5)
             const score = parseFloat((doc.value["score"] as string) ?? "1");
             return score < 0.5;
         })
-        .map((doc) => {
-            const v = doc.value as Record<string, string>;
-            return hashToKB(v);
-        });
+        .map((doc) => hashToKB(doc.value as Record<string, string>));
 }
 
-//  FEATURES — simple key-value (no vector search needed)
 
 const FEAT_PREFIX = "feature:";
 const FEAT_INDEX = "feature:index";
 
 export async function addFeature(detail: FeatureDetail): Promise<void> {
-    await client.set(
-        `${FEAT_PREFIX}${detail.featureName}`,
-        JSON.stringify(detail)
-    );
+    await client.set(`${FEAT_PREFIX}${detail.featureName}`, JSON.stringify(detail));
     await client.sAdd(FEAT_INDEX, detail.featureName);
 }
 
-export async function getFeatureDetail(
-    name: string
-): Promise<FeatureDetail | null> {
+export async function getFeatureDetail(name: string): Promise<FeatureDetail | null> {
     const raw = await client.get(`${FEAT_PREFIX}${name}`);
     return raw ? JSON.parse(raw) : null;
 }
@@ -253,10 +209,7 @@ export async function getFeatureDetail(
 export async function updateFeature(detail: FeatureDetail): Promise<boolean> {
     const exists = await client.exists(`${FEAT_PREFIX}${detail.featureName}`);
     if (!exists) return false;
-    await client.set(
-        `${FEAT_PREFIX}${detail.featureName}`,
-        JSON.stringify(detail)
-    );
+    await client.set(`${FEAT_PREFIX}${detail.featureName}`, JSON.stringify(detail));
     return true;
 }
 
@@ -281,37 +234,22 @@ export async function getAllFeatures(): Promise<FeatureDetail[]> {
 
 export async function clearFeatures(): Promise<void> {
     const names = await client.sMembers(FEAT_INDEX);
-    for (const n of names) {
-        await client.del(`${FEAT_PREFIX}${n}`);
-    }
+    for (const n of names) await client.del(`${FEAT_PREFIX}${n}`);
     await client.del(FEAT_INDEX);
 }
 
-/**
- * Cleans up stale keys from previous versions that used a different
- * storage format (plain strings instead of hashes). Without this,
- * Redis throws WRONGTYPE errors when we try hSet on old string keys.
- */
+
 async function cleanStaleKeys(): Promise<void> {
-    const prefixes = [KB_PREFIX, "kb:index"];
-    for (const pattern of prefixes) {
-        for await (const keys of client.scanIterator({
-            MATCH: pattern.endsWith("*") ? pattern : `${pattern}*`,
-        })) {
-            const batch = Array.isArray(keys) ? keys : [keys];
-            for (const key of batch) {
-                const keyType = await client.type(key as string);
-                // If it's a leftover string key where we now expect a hash, delete it
-                if (keyType === "string" && (key as string).startsWith(KB_PREFIX)) {
-                    await client.del(key as string);
-                }
-                // Also clean up the old kb:index set if it exists
-                if ((key as string) === "kb:index") {
-                    await client.del(key as string);
-                }
+    for await (const keys of client.scanIterator({ MATCH: `${KB_PREFIX}*` })) {
+        const batch = Array.isArray(keys) ? keys : [keys];
+        for (const key of batch) {
+            const keyType = await client.type(key as string);
+            if (keyType === "string" && (key as string).startsWith(KB_PREFIX)) {
+                await client.del(key as string);
             }
         }
     }
+    try { await client.del("kb:index"); } catch { }
 }
 
 export async function seedDefaults(): Promise<void> {
@@ -324,60 +262,121 @@ export async function seedDefaults(): Promise<void> {
         return;
     }
 
-    console.log("⏳ Seeding KB + features (generating embeddings)...");
+    console.log("⏳ Seeding KB + features...");
 
     await addKBEntries([
-        { type: "info", desc: "Cabswale is a driver and user matching system" },
-        { type: "info", desc: "Users can book outstation trips" },
-        {
-            type: "info",
-            desc: "Drivers can set availability and preferred routes",
-        },
-        {
-            type: "feature",
-            desc: "Verify aadhaar card via aadhaar number for identity verification",
-            featureName: "aadhar_verification",
-            tools: ["sendAadharOtpTool", "verifyAadharOtpTool"],
-        },
-        {
-            type: "feature",
-            desc: "Book an outstation cab trip with pickup drop and dates",
-            featureName: "book_trip",
-            tools: ["searchCabsTool"],
-        },
+        { type: "info", desc: "CabsWale is a travel platform where users book outstation trips by choosing drivers directly" },
+        { type: "info", desc: "Joining CabsWale is free. Profile creation has no cost" },
+        { type: "info", desc: "Customers pay driver directly via cash or UPI. CabsWale takes no commission from trip fare" },
+        { type: "info", desc: "Verification requires RC Registration Certificate, Driving License DL, and Aadhaar Card" },
+        { type: "info", desc: "Verification is mandatory to get duties. No duties without verification for safety and trust" },
+        { type: "info", desc: "Drivers can add multiple vehicles to their profile" },
+        { type: "info", desc: "Wallet recharge is required to access premium features or view contact details" },
+        { type: "info", desc: "Premium drivers get a Premium Badge, higher priority in search, and exclusive high-value duties" },
+        { type: "info", desc: "Raahi is an AI assistant that helps drivers find duties, nearby services, and CabsWale information" },
     ]);
 
+    await addKBEntries([
+        { type: "feature", desc: "Find duties trips transport between cities route booking", featureName: "find_duties", tools: [] },
+        { type: "feature", desc: "CNG pump gas station nearby CNG kahan hai", featureName: "nearby_cng", tools: [] },
+        { type: "feature", desc: "Petrol pump fuel station nearby", featureName: "nearby_petrol", tools: [] },
+        { type: "feature", desc: "Parking space gaadi park truck parking", featureName: "nearby_parking", tools: [] },
+        { type: "feature", desc: "Nearby drivers dusre driver paas mein", featureName: "nearby_drivers", tools: [] },
+        { type: "feature", desc: "Towing service tow truck breakdown", featureName: "nearby_towing", tools: [] },
+        { type: "feature", desc: "Toilet restroom washroom bathroom", featureName: "nearby_toilets", tools: [] },
+        { type: "feature", desc: "Taxi stand cab stand auto stand", featureName: "nearby_taxi_stands", tools: [] },
+        { type: "feature", desc: "Auto parts spare parts dukaan shop", featureName: "nearby_auto_parts", tools: [] },
+        { type: "feature", desc: "Car repair mechanic gaadi repair workshop", featureName: "nearby_car_repair", tools: [] },
+        { type: "feature", desc: "Hospital emergency medical clinic", featureName: "nearby_hospital", tools: [] },
+        { type: "feature", desc: "Police station thana police help", featureName: "nearby_police", tools: [] },
+        { type: "feature", desc: "Fraud check scam warning dhoka", featureName: "check_fraud", tools: [] },
+        { type: "feature", desc: "Advance payment commission dena", featureName: "advance_payment", tools: [] },
+        { type: "feature", desc: "Goodbye thanks bye end conversation shukriya dhanyavaad", featureName: "end_conversation", tools: [] },
+        { type: "feature", desc: "Verify aadhaar card identity verification aadhaar number", featureName: "aadhaar_verification", tools: ["sendAadharOtpTool", "verifyAadharOtpTool"] },
+        { type: "feature", desc: "Book outstation cab trip booking ride", featureName: "book_trip", tools: ["searchCabsTool"] },
+    ]);
+
+
+    const simpleFeature = (
+        featureName: string,
+        desc: string,
+        actionType: string,
+        responseHint: string,
+    ): FeatureDetail => ({
+        featureName,
+        desc,
+        prompt: `User wants ${desc}. Respond in Hinglish: "${responseHint}" or similar.`,
+        tools: [],
+        actionType: actionType as any,
+        dataSchema: { type: "OBJECT", properties: {} },
+    });
+
+    const simpleFeatures: FeatureDetail[] = [
+        simpleFeature("nearby_cng", "nearby CNG stations", "show_cng_stations", "Aapke paas CNG stations dhund rahi hoon"),
+        simpleFeature("nearby_petrol", "nearby petrol pumps", "show_petrol_stations", "Petrol pumps locate kar rahi hoon"),
+        simpleFeature("nearby_parking", "nearby parking", "show_parking", "Parking spots dhund rahi hoon"),
+        simpleFeature("nearby_drivers", "nearby drivers", "show_nearby_drivers", "Aas-paas ke drivers search kar rahi hoon"),
+        simpleFeature("nearby_towing", "towing services", "show_towing", "Towing services locate kar rahi hoon"),
+        simpleFeature("nearby_toilets", "nearby toilets restrooms", "show_toilets", "Toilets dhund rahi hoon"),
+        simpleFeature("nearby_taxi_stands", "nearby taxi stands", "show_taxi_stands", "Taxi stands show kar rahi hoon"),
+        simpleFeature("nearby_auto_parts", "auto parts shops", "show_auto_parts", "Auto parts shops dhund rahi hoon"),
+        simpleFeature("nearby_car_repair", "car repair shops", "show_car_repair", "Car repair shops locate kar rahi hoon"),
+        simpleFeature("nearby_hospital", "nearby hospitals", "show_hospital", "Hospitals search kar rahi hoon"),
+        simpleFeature("nearby_police", "nearby police stations", "show_police_station", "Police station show kar rahi hoon"),
+        simpleFeature("check_fraud", "fraud check information", "show_fraud", "Fraud information show kar rahi hoon"),
+        simpleFeature("advance_payment", "advance or commission payment", "show_advance", "Advance payment ka option open kar rahi hoon"),
+        simpleFeature("end_conversation", "end conversation goodbye", "show_end", "Shukriya! Aapki yatra mangalmay ho"),
+    ];
+
+    for (const f of simpleFeatures) await addFeature(f);
+
     await addFeature({
-        featureName: "aadhar_verification",
+        featureName: "find_duties",
+        desc: "Find duties/trips between cities",
+        prompt: `User wants to find duties/trips. Extract from_city and to_city from their message.
+If multiple destination cities mentioned, use ONLY the first one as to_city.
+If only one city mentioned, that is from_city (source).`,
+        tools: [],
+        actionType: "show_duties_list",
+        dataSchema: {
+            type: "OBJECT",
+            properties: {
+                from_city: { type: "STRING", description: "Source city", nullable: true },
+                to_city: { type: "STRING", description: "Destination city (first only if multiple)", nullable: true },
+                trip_type: { type: "STRING", description: "one_way or round_trip", nullable: true },
+                date: { type: "STRING", description: "Travel date if mentioned", nullable: true },
+            },
+        },
+    });
+
+    await addFeature({
+        featureName: "aadhaar_verification",
         desc: "Verify aadhaar card via aadhaar number",
-        prompt: `You are now handling Aadhaar verification.
+        prompt: `Handle Aadhaar verification.
 Tools: sendAadharOtpTool, verifyAadharOtpTool.
-
-RULES:
-- You MUST call verifyAadharOtpTool to verify OTP. Never judge OTP yourself.
-- You do NOT know the correct OTP. Only verifyAadharOtpTool can check.
-
+RULES: You MUST call verifyAadharOtpTool to verify OTP. Never judge OTP yourself.
 FLOW:
-1. If user already provided Aadhaar number, proceed. Otherwise ask for 12-digit Aadhaar number.
-2. Call sendAadharOtpTool with the aadhaar number.
-3. Tell user OTP was sent, ask them to provide it.
-4. When user gives OTP, IMMEDIATELY call verifyAadharOtpTool with the OTP.
-5. Report result based on tool response.`,
+1. If user provided Aadhaar number, proceed. Otherwise ask for 12-digit number.
+2. Call sendAadharOtpTool with the number.
+3. Tell user OTP was sent, ask for it.
+4. When user gives OTP, call verifyAadharOtpTool.
+5. Report result from tool.
+Set step field: need_aadhaar → otp_sent → verified/failed.`,
         tools: ["sendAadharOtpTool", "verifyAadharOtpTool"],
+        actionType: "show_otp_input",
+        dataSchema: {
+            type: "OBJECT",
+            properties: {
+                step: {
+                    type: "STRING",
+                    description: "Current step in flow",
+                    enum: ["need_aadhaar", "otp_sent", "verified", "failed"],
+                },
+                masked_phone: { type: "STRING", description: "Masked phone number", nullable: true },
+                verified: { type: "BOOLEAN", description: "Whether verification passed", nullable: true },
+            },
+        },
     });
 
-    await addFeature({
-        featureName: "book_trip",
-        desc: "Book an outstation cab trip",
-        prompt: `You are now handling cab booking.
-Tools: searchCabsTool.
-
-FLOW:
-1. Ask for pickup location, destination, and optionally date/time.
-2. Call searchCabsTool with the details.
-3. Present available options to the user.`,
-        tools: ["searchCabsTool"],
-    });
-
-    console.log("Default KB + features seeded with embeddings");
+    console.log("KB + features seeded");
 }

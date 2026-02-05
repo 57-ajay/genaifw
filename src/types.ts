@@ -1,5 +1,51 @@
 import type { Type } from "@google/genai";
 
+export type UIActionType =
+    | "show_duties_list"
+    | "show_cng_stations"
+    | "show_petrol_stations"
+    | "show_parking"
+    | "show_nearby_drivers"
+    | "show_towing"
+    | "show_toilets"
+    | "show_taxi_stands"
+    | "show_auto_parts"
+    | "show_car_repair"
+    | "show_hospital"
+    | "show_police_station"
+    | "show_fraud"
+    | "show_info"
+    | "show_advance"
+    | "show_end"
+    | "show_map"
+    | "show_otp_input"
+    | "show_verification_result"
+    | "none";
+
+export const ALL_UI_ACTIONS: UIActionType[] = [
+    "show_duties_list", "show_cng_stations", "show_petrol_stations",
+    "show_parking", "show_nearby_drivers", "show_towing",
+    "show_toilets", "show_taxi_stands", "show_auto_parts",
+    "show_car_repair", "show_hospital", "show_police_station",
+    "show_fraud", "show_info", "show_advance", "show_end",
+    "show_map", "show_otp_input", "show_verification_result", "none",
+];
+
+
+export interface AgentResponse {
+    response: string;
+    action: {
+        type: UIActionType;
+        data: Record<string, any>;
+    };
+}
+
+
+export interface MatchedAction {
+    actionType: UIActionType;
+    dataSchema: Record<string, any>;
+}
+
 
 export type KBEntry =
     | { type: "info"; desc: string }
@@ -10,6 +56,8 @@ export interface FeatureDetail {
     desc: string;
     prompt: string;
     tools: string[];
+    actionType: UIActionType;
+    dataSchema: Record<string, any>;
 }
 
 
@@ -26,7 +74,10 @@ export interface ToolDeclaration {
     };
 }
 
-export type ToolFn = (args: Record<string, string>) => Promise<ToolResult>;
+export type ToolFn = (
+    args: Record<string, string>,
+    session: Session,
+) => Promise<ToolResult>;
 
 export interface ToolResult {
     msg: string;
@@ -38,6 +89,7 @@ export interface Session {
     id: string;
     history: ChatMessage[];
     activeTools: string[];
+    matchedAction: MatchedAction | null;
     createdAt: number;
     updatedAt: number;
 }

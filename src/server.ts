@@ -23,7 +23,6 @@ import type { KBEntry, FeatureDetail, APIResponse } from "./types";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
-
 function json<T>(data: T, status = 200): Response {
     return new Response(JSON.stringify(data), {
         status,
@@ -43,12 +42,9 @@ async function readBody<T>(req: Request): Promise<T> {
     return (await req.json()) as T;
 }
 
-/** Extract ID from path like /kb/some-id-here */
 function extractId(path: string, prefix: string): string {
     return path.slice(prefix.length);
 }
-
-//  Routes
 
 async function handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -57,36 +53,28 @@ async function handleRequest(req: Request): Promise<Response> {
 
     try {
 
-        // GET /kb — list all
         if (path === "/kb" && method === "GET") {
-            const entries = await getAllKBEntries();
-            return ok(entries);
+            return ok(await getAllKBEntries());
         }
 
-        // POST /kb — add entry/entries
         if (path === "/kb" && method === "POST") {
             const body = await readBody<KBEntry | KBEntry[]>(req);
             const entries = Array.isArray(body) ? body : [body];
-
             for (const e of entries) {
-                if (!e.type || !e.desc)
-                    return err("Each entry needs 'type' and 'desc'");
+                if (!e.type || !e.desc) return err("Each entry needs 'type' and 'desc'");
                 if (e.type === "feature" && (!e.featureName || !e.tools?.length)) {
                     return err("Feature entries need 'featureName' and 'tools' array");
                 }
             }
-
             const ids = await addKBEntries(entries);
             return ok({ added: ids.length, ids });
         }
 
-        // DELETE /kb — clear all
         if (path === "/kb" && method === "DELETE") {
             await clearKB();
             return ok({ cleared: true });
         }
 
-        // GET /kb/:id — get one entry
         if (path.startsWith("/kb/") && method === "GET") {
             const id = extractId(path, "/kb/");
             const entry = await getKBEntry(id);
@@ -94,20 +82,15 @@ async function handleRequest(req: Request): Promise<Response> {
             return ok({ id, ...entry });
         }
 
-        // PUT /kb/:id — update entry (replaces it, re-generates embedding)
         if (path.startsWith("/kb/") && method === "PUT") {
             const id = extractId(path, "/kb/");
             const body = await readBody<KBEntry>(req);
             if (!body.type || !body.desc) return err("Need 'type' and 'desc'");
-            if (body.type === "feature" && (!body.featureName || !body.tools?.length)) {
-                return err("Feature entries need 'featureName' and 'tools'");
-            }
             const updated = await updateKBEntry(id, body);
             if (!updated) return err("KB entry not found", 404);
             return ok({ updated: id });
         }
 
-        // DELETE /kb/:id — delete one entry
         if (path.startsWith("/kb/") && method === "DELETE") {
             const id = extractId(path, "/kb/");
             const deleted = await deleteKBEntry(id);
@@ -116,35 +99,30 @@ async function handleRequest(req: Request): Promise<Response> {
         }
 
 
-        // GET /features — list all
         if (path === "/features" && method === "GET") {
-            const features = await getAllFeatures();
-            return ok(features);
+            return ok(await getAllFeatures());
         }
 
-        // POST /features — add new (or use PUT to upsert)
         if (path === "/features" && method === "POST") {
             const body = await readBody<FeatureDetail>(req);
-            if (!body.featureName || !body.prompt || !body.tools?.length) {
-                return err("Need 'featureName', 'prompt', and 'tools' array");
+            if (!body.featureName || !body.prompt || !body.actionType || !body.dataSchema) {
+                return err("Need 'featureName', 'prompt', 'actionType', and 'dataSchema'");
             }
-            const missing = body.tools.filter((t) => !hasDeclaration(t));
-            if (missing.length) {
-                return err(
-                    `Tool declarations missing: ${missing.join(", ")}. Add them in tools.ts first.`
-                );
+            if (body.tools?.length) {
+                const missing = body.tools.filter((t) => !hasDeclaration(t));
+                if (missing.length) {
+                    return err(`Tool declarations missing: ${missing.join(", ")}`);
+                }
             }
             await addFeature(body);
             return ok({ added: body.featureName });
         }
 
-        // DELETE /features — clear all
         if (path === "/features" && method === "DELETE") {
             await clearFeatures();
             return ok({ cleared: true });
         }
 
-        // GET /features/:name — get one
         if (path.startsWith("/features/") && method === "GET") {
             const name = extractId(path, "/features/");
             const detail = await getFeatureDetail(name);
@@ -152,36 +130,31 @@ async function handleRequest(req: Request): Promise<Response> {
             return ok(detail);
         }
 
-        // PUT /features/:name — update (replace prompt, tools, desc)
         if (path.startsWith("/features/") && method === "PUT") {
             const name = extractId(path, "/features/");
             const body = await readBody<Partial<FeatureDetail>>(req);
-
             const existing = await getFeatureDetail(name);
             if (!existing) return err("Feature not found", 404);
 
-            // Merge: overwrite only provided fields
             const merged: FeatureDetail = {
                 featureName: name,
                 desc: body.desc ?? existing.desc,
                 prompt: body.prompt ?? existing.prompt,
                 tools: body.tools ?? existing.tools,
+                actionType: body.actionType ?? existing.actionType,
+                dataSchema: body.dataSchema ?? existing.dataSchema,
             };
 
             if (body.tools?.length) {
                 const missing = body.tools.filter((t) => !hasDeclaration(t));
                 if (missing.length) {
-                    return err(
-                        `Tool declarations missing: ${missing.join(", ")}. Add them in tools.ts first.`
-                    );
+                    return err(`Tool declarations missing: ${missing.join(", ")}`);
                 }
             }
-
             await updateFeature(merged);
             return ok({ updated: name });
         }
 
-        // DELETE /features/:name — delete one
         if (path.startsWith("/features/") && method === "DELETE") {
             const name = extractId(path, "/features/");
             const deleted = await deleteFeature(name);
@@ -206,8 +179,12 @@ async function handleRequest(req: Request): Promise<Response> {
                 parts: [{ text: body.message }],
             });
 
-            const reply = await resolve(session);
-            return ok({ reply, sessionId: body.sessionId });
+            const result = await resolve(session);
+
+            return ok({
+                sessionId: body.sessionId,
+                ...result,
+            });
         }
 
 
@@ -229,39 +206,21 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 }
 
-
 export async function startServer() {
     await connectRedis(process.env.REDIS_URL ?? "redis://localhost:6379");
     await seedDefaults();
 
-    Bun.serve({
-        port: PORT,
-        fetch: handleRequest,
-    });
+    Bun.serve({ port: PORT, fetch: handleRequest });
 
     console.log(`✓ API server on http://localhost:${PORT}`);
     console.log(`
-  KB Endpoints:
-    GET    /kb               — list all entries (with IDs)
-    POST   /kb               — add entry/entries
-    GET    /kb/:id           — get one entry
-    PUT    /kb/:id           — update entry (re-generates embedding)
-    DELETE /kb/:id           — delete one entry
-    DELETE /kb               — clear all entries
-
-  Feature Endpoints:
-    GET    /features              — list all
-    POST   /features              — add new feature
-    GET    /features/:name        — get one
-    PUT    /features/:name        — update (partial merge)
-    DELETE /features/:name        — delete one
-    DELETE /features              — clear all
-
   Chat:
-    POST   /chat             — { sessionId, message }
-    DELETE /session/:id      — delete session
+    POST /chat  →  { sessionId, message }
+                ←  { response, action: { type, data } }
 
-  Health:
-    GET    /health
-  `);
+  KB:       GET|POST|DELETE /kb    GET|PUT|DELETE /kb/:id
+  Features: GET|POST|DELETE /features  GET|PUT|DELETE /features/:name
+  Session:  DELETE /session/:id
+  Health:   GET /health
+    `);
 }
