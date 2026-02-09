@@ -4,6 +4,7 @@ import {
 } from "redis";
 import type { Session, KBEntry, FeatureDetail, UserData } from "./types";
 import { embed, VECTOR_DIM } from "./embeddings";
+import { scheduleFirestoreSync, loadSessionFromFirestore } from "./firebase";
 
 let client: RedisClientType;
 
@@ -24,12 +25,20 @@ const sessionKey = (id: string) => `session:${id}`;
 
 export async function getSession(id: string): Promise<Session | null> {
     const raw = await client.get(sessionKey(id));
-    return raw ? JSON.parse(raw) : null;
+    if (raw) return JSON.parse(raw);
+
+    const restored = await loadSessionFromFirestore(id);
+    if (restored) {
+        await client.set(sessionKey(id), JSON.stringify(restored), { EX: SESSION_TTL });
+    }
+    return restored;
 }
 
 export async function saveSession(session: Session): Promise<void> {
     session.updatedAt = Date.now();
     await client.set(sessionKey(session.id), JSON.stringify(session), { EX: SESSION_TTL });
+
+    scheduleFirestoreSync(session);
 }
 
 export async function deleteSession(id: string): Promise<void> {

@@ -2,6 +2,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { getSession, newSession, saveSession } from "./store";
 import { resolve, BASE_TOOLS } from "./agent";
 import { resolveAudio, streamAudio, AUDIO_CONFIG } from "./audio";
+import { flushSession } from "./firebase";
 import type { UserData } from "./types";
 
 interface IncomingMessage {
@@ -10,6 +11,8 @@ interface IncomingMessage {
     userData?: UserData | null;
     audio?: boolean;
 }
+
+const clientSessions = new WeakMap<WebSocket, string>();
 
 function send(ws: WebSocket, data: Record<string, any>): void {
     if (ws.readyState === ws.OPEN) {
@@ -31,6 +34,8 @@ async function handleMessage(ws: WebSocket, raw: string): Promise<void> {
         send(ws, { type: "error", error: "Need 'sessionId' and 'message'" });
         return;
     }
+
+    clientSessions.set(ws, sessionId);
 
     let session = await getSession(sessionId);
     if (!session) {
@@ -80,6 +85,13 @@ export function startWS(port: number): void {
 
         ws.on("close", () => {
             console.log(`WS client disconnected (total: ${wss.clients.size})`);
+
+            const sessionId = clientSessions.get(ws);
+            if (sessionId) {
+                flushSession(sessionId).catch((e) =>
+                    console.error(`[Firestore] flush on disconnect failed:`, e.message),
+                );
+            }
         });
     });
 

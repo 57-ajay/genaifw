@@ -7,3 +7,4 @@ export * from "./agent";
 export * from "./server";
 export * from "./ws";
 export * from "./audio";
+export * from "./firebase";
