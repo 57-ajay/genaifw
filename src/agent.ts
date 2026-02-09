@@ -1,5 +1,5 @@
 import { ai, MODEL } from "./config";
-import type { Part, Session, AgentResponse, UIActionType } from "./types";
+import type { Part, Session, AgentResponse, UIActionType, UserData } from "./types";
 import { saveSession } from "./store";
 import { getTool, getDeclarations, buildRespondTool } from "./tools";
 import type { FunctionCall } from "@google/genai";
@@ -29,6 +29,25 @@ For EVERY user request (except simple greetings):
 - When a feature prompt tells you to call a tool, call it.
 - If the user already provided info, don't ask again — use it.`;
 
+function buildSystemPrompt(userData: UserData | null): string {
+    if (!userData) return SYSTEM_PROMPT;
+
+    const parts: string[] = [];
+    if (userData.name) parts.push(`Name: ${userData.name}`);
+    if (userData.phoneNo) parts.push(`Phone: ${userData.phoneNo}`);
+    if (userData.date) parts.push(`Today's date: ${userData.date}`);
+
+    for (const [key, val] of Object.entries(userData)) {
+        if (val && !["name", "phoneNo", "date"].includes(key)) {
+            parts.push(`${key}: ${val}`);
+        }
+    }
+
+    if (!parts.length) return SYSTEM_PROMPT;
+
+    return `${SYSTEM_PROMPT}\n\n## Current User Info\n${parts.join("\n")}`;
+}
+
 export const BASE_TOOLS = ["fetchKnowledgeBase", "fetchFeaturePrompt"];
 
 const MAX_DEPTH = 15;
@@ -55,13 +74,14 @@ async function loop(
 
     const respondDecl = buildRespondTool(session.matchedAction);
     const toolDecls = [...getDeclarations(session.activeTools), respondDecl];
+    const systemPrompt = buildSystemPrompt(session.userData);
 
     const stream = await ai.models.generateContentStream({
         model: MODEL,
         contents: session.history as any,
         config: {
             tools: [{ functionDeclarations: toolDecls as any }],
-            systemInstruction: SYSTEM_PROMPT,
+            systemInstruction: systemPrompt,
         },
     });
 

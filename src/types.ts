@@ -76,11 +76,19 @@ export interface ToolResult {
 }
 
 
+export interface UserData {
+    name?: string;
+    phoneNo?: string;
+    date?: string;
+    [key: string]: string | undefined;
+}
+
 export interface Session {
     id: string;
     history: ChatMessage[];
     activeTools: string[];
     matchedAction: MatchedAction | null;
+    userData: UserData | null;
     createdAt: number;
     updatedAt: number;
 }

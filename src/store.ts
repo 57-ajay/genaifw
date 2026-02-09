@@ -2,7 +2,7 @@ import {
     createClient,
     type RedisClientType,
 } from "redis";
-import type { Session, KBEntry, FeatureDetail } from "./types";
+import type { Session, KBEntry, FeatureDetail, UserData } from "./types";
 import { embed, VECTOR_DIM } from "./embeddings";
 
 let client: RedisClientType;
@@ -36,12 +36,13 @@ export async function deleteSession(id: string): Promise<void> {
     await client.del(sessionKey(id));
 }
 
-export function newSession(id: string, baseTools: string[]): Session {
+export function newSession(id: string, baseTools: string[], userData?: UserData | null): Session {
     return {
         id,
         history: [],
         activeTools: [...baseTools],
         matchedAction: null,
+        userData: userData ?? null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
     };
@@ -262,7 +263,7 @@ export async function seedDefaults(): Promise<void> {
         return;
     }
 
-    console.log("⏳ Seeding KB + features...");
+    console.log("Seeding KB + features...");
 
     await addKBEntries([
         { type: "info", desc: "CabsWale is a travel platform where users book outstation trips by choosing drivers directly" },
