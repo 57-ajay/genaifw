@@ -61,7 +61,6 @@ async function main() {
 
             try {
                 const result = await resolve(session!);
-                console.dir(`result:  ${result.action.data}`, { depth: null });
                 console.log(`\nBot: ${result.response}`);
                 console.log(`  -> action: ${result.action.type}`);
                 if (Object.keys(result.action.data).length > 0) {

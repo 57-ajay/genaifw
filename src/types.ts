@@ -1,5 +1,3 @@
-import type { Type } from "@google/genai";
-
 export type UIActionType =
     | "show_duties_list"
     | "show_cng_stations"
@@ -64,14 +62,7 @@ export interface FeatureDetail {
 export interface ToolDeclaration {
     name: string;
     description: string;
-    parameters: {
-        type: typeof Type.OBJECT;
-        properties: Record<
-            string,
-            { type: typeof Type.STRING; description: string }
-        >;
-        required: string[];
-    };
+    parameters: Record<string, any>;
 }
 
 export type ToolFn = (

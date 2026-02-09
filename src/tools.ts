@@ -1,6 +1,9 @@
 import { Type } from "@google/genai";
-import type { ToolDeclaration, ToolFn, KBEntry } from "./types";
+import type { ToolDeclaration, ToolFn, KBEntry, MatchedAction } from "./types";
+import { ALL_UI_ACTIONS } from "./types";
 import { searchKnowledgeBase, getFeatureDetail } from "./store";
+
+export const RESPOND_TOOL = "respondToUser";
 
 
 const declarations: Record<string, ToolDeclaration> = {
@@ -67,6 +70,37 @@ const declarations: Record<string, ToolDeclaration> = {
         },
     },
 };
+
+
+export function buildRespondDeclaration(matched: MatchedAction | null): ToolDeclaration {
+    const actionEnum = matched
+        ? [matched.actionType]
+        : ALL_UI_ACTIONS;
+
+    const dataProps = matched?.dataSchema?.properties ?? {};
+
+    return {
+        name: RESPOND_TOOL,
+        description:
+            "Send your final Hinglish response to the user along with a UI action. " +
+            "Call this ONCE when you are ready to respond. Do NOT call any other tool after this.",
+        parameters: {
+            type: Type.OBJECT,
+            properties: {
+                response: {
+                    type: Type.STRING,
+                    description: "Concise Hinglish response text (1-2 sentences) for the user",
+                },
+                action_type: {
+                    type: Type.STRING,
+                    description: `UI action type. Allowed: ${actionEnum.join(", ")}`,
+                },
+                ...dataProps,
+            },
+            required: ["response", "action_type"],
+        },
+    } as any;
+}
 
 
 function formatKBResults(entries: KBEntry[]): string {
@@ -154,4 +188,35 @@ export function getTool(name: string): ToolFn | undefined {
 
 export function hasDeclaration(name: string): boolean {
     return name in declarations;
+}
+
+export function buildRespondTool(matched: MatchedAction | null): ToolDeclaration {
+    const actionEnum = matched ? [matched.actionType] : ALL_UI_ACTIONS;
+    const dataSchema = matched?.dataSchema ?? {
+        type: Type.OBJECT,
+        properties: {},
+    };
+
+    return {
+        name: "respondToUser",
+        description:
+            "Send your final Hinglish response and UI action to the user. " +
+            "You MUST call this exactly once to finish every conversation turn.",
+        parameters: {
+            type: Type.OBJECT,
+            properties: {
+                response: {
+                    type: Type.STRING,
+                    description: "Concise Hinglish response text (1-2 sentences)",
+                },
+                action_type: {
+                    type: Type.STRING,
+                    enum: actionEnum,
+                    description: "UI action for the client app",
+                },
+                action_data: dataSchema,
+            },
+            required: ["response", "action_type", "action_data"],
+        },
+    };
 }

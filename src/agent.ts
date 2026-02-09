@@ -1,9 +1,10 @@
 import { ai, MODEL } from "./config";
-import type { Part, Session, AgentResponse, MatchedAction, UIActionType } from "./types";
-import { ALL_UI_ACTIONS } from "./types";
+import type { Part, Session, AgentResponse, UIActionType } from "./types";
 import { saveSession } from "./store";
-import { getTool, getDeclarations } from "./tools";
-import type { FunctionCall } from "@google/genai/web";
+import { getTool, getDeclarations, buildRespondTool } from "./tools";
+import type { FunctionCall } from "@google/genai";
+
+const RESPOND_TOOL_NAME = "respondToUser";
 
 const SYSTEM_PROMPT = `You are RAAHI, a helpful female assistant for Cabswale.
 You ALWAYS respond in HINGLISH (natural mix of Hindi and English). Never pure English or pure Hindi.
@@ -14,42 +15,52 @@ For EVERY user request (except simple greetings):
 1. Call fetchKnowledgeBase with keywords from the user query.
 2. If result has [FEATURE] entries, call fetchFeaturePrompt with exact featureName.
 3. After loading feature, follow its instructions and use its tools.
+4. When ready to respond, call respondToUser with your response text and UI action.
 
-## Rules
+## Response Rules
+- ALWAYS finish by calling respondToUser. This is mandatory.
+- Put your Hinglish text in the "response" field.
+- Set action_type to the appropriate UI action.
+- Fill action_data fields per the feature schema.
+- Be concise — 1-2 sentences max.
+- For multiple destination cities, extract ONLY the first city as to_city.
 - NEVER skip fetchKnowledgeBase.
 - NEVER skip fetchFeaturePrompt when a [FEATURE] is found.
 - When a feature prompt tells you to call a tool, call it.
-- If the user already provided info, don't ask again — use it.
-- Be concise.`;
-
-const RESPONSE_PROMPT = `You are RAAHI, a helpful female assistant for Cabswale.
-Respond in HINGLISH (natural mix of Hindi and English). Respectful tone — use "Aap".
-Based on the conversation, produce the final response and action data.
-Be concise — 1-2 sentences max.
-For multiple destination cities, extract ONLY the first city as to_city.`;
+- If the user already provided info, don't ask again — use it.`;
 
 export const BASE_TOOLS = ["fetchKnowledgeBase", "fetchFeaturePrompt"];
 
 const MAX_DEPTH = 15;
 
-
-export async function resolve(session: Session): Promise<AgentResponse> {
-    const text = await phase1(session, 0);
-
-    return phase2(session, text);
+export async function resolve(
+    session: Session,
+    onTextChunk?: (chunk: string) => void,
+): Promise<AgentResponse> {
+    return loop(session, 0, onTextChunk);
 }
 
 
-async function phase1(session: Session, depth: number): Promise<string> {
+async function loop(
+    session: Session,
+    depth: number,
+    onTextChunk?: (chunk: string) => void,
+): Promise<AgentResponse> {
     if (depth >= MAX_DEPTH) {
-        return "Bahut zyada steps ho gaye. Kya aap dobara bata sakte hain?";
+        return {
+            response: "Bahut zyada steps ho gaye. Kya aap dobara bata sakte hain?",
+            action: { type: "none", data: {} },
+        };
     }
+
+    const respondDecl = buildRespondTool(session.matchedAction);
+    const toolDecls = [...getDeclarations(session.activeTools), respondDecl];
 
     const stream = await ai.models.generateContentStream({
         model: MODEL,
         contents: session.history as any,
         config: {
-            tools: [{ functionDeclarations: getDeclarations(session.activeTools) }],
+            tools: [{ functionDeclarations: toolDecls as any }],
             systemInstruction: SYSTEM_PROMPT,
         },
     });
@@ -60,19 +71,41 @@ async function phase1(session: Session, depth: number): Promise<string> {
     for await (const chunk of stream) {
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
-            if (p.text) text += p.text;
+            if (p.text) {
+                text += p.text;
+                onTextChunk?.(p.text);
+            }
             if (p.functionCall && !fnCall) fnCall = p.functionCall;
         }
     }
 
-    session.history.push({
-        role: "model",
-        parts: fnCall
-            ? [{ functionCall: fnCall } as Part]
-            : [{ text }],
-    });
+    if (fnCall?.name === RESPOND_TOOL_NAME) {
+        const args = (fnCall.args ?? {}) as Record<string, any>;
+
+        const responseText: string = args.response ?? text ?? "Kuch samajh nahi aaya.";
+        session.history.push({
+            role: "model",
+            parts: [{ text: responseText }],
+        });
+
+        session.matchedAction = null;
+        await saveSession(session);
+
+        return {
+            response: responseText,
+            action: {
+                type: (args.action_type as UIActionType) ?? "none",
+                data: args.action_data ?? {},
+            },
+        };
+    }
 
     if (fnCall) {
+        session.history.push({
+            role: "model",
+            parts: [{ functionCall: fnCall } as Part],
+        });
+
         const fn = getTool(fnCall.name!);
         const args =
             fnCall.args && typeof fnCall.args === "object"
@@ -97,83 +130,19 @@ async function phase1(session: Session, depth: number): Promise<string> {
         });
 
         await saveSession(session);
-        return phase1(session, depth + 1);
+        return loop(session, depth + 1, onTextChunk);
     }
 
+    session.history.push({
+        role: "model",
+        parts: [{ text }],
+    });
+
+    session.matchedAction = null;
     await saveSession(session);
-    return text;
-}
-
-
-async function phase2(session: Session, fallbackText: string): Promise<AgentResponse> {
-    const schema = buildResponseSchema(session.matchedAction);
-
-    try {
-        const result = await ai.models.generateContent({
-            model: MODEL,
-            contents: session.history as any,
-            config: {
-                systemInstruction: RESPONSE_PROMPT,
-                responseMimeType: "application/json",
-                responseSchema: schema as any,
-            },
-        });
-
-        const raw = result.text ?? "";
-        const parsed = JSON.parse(raw);
-
-        session.matchedAction = null;
-        await saveSession(session);
-
-        return {
-            response: parsed.response ?? fallbackText,
-            action: {
-                type: parsed.action?.type ?? "none",
-                data: parsed.action?.data ?? {},
-            },
-        };
-    } catch {
-        session.matchedAction = null;
-        await saveSession(session);
-
-        return {
-            response: fallbackText || "Kuch samajh nahi aaya, kya aap dobara bata sakte hain?",
-            action: { type: "none", data: {} },
-        };
-    }
-}
-
-
-function buildResponseSchema(matched: MatchedAction | null) {
-    const actionEnum: UIActionType[] = matched
-        ? [matched.actionType]
-        : ALL_UI_ACTIONS;
-
-    const dataSchema = matched?.dataSchema ?? {
-        type: "OBJECT" as const,
-        properties: {},
-    };
 
     return {
-        type: "OBJECT" as const,
-        properties: {
-            response: {
-                type: "STRING" as const,
-                description: "Hinglish response text for the user",
-            },
-            action: {
-                type: "OBJECT" as const,
-                properties: {
-                    type: {
-                        type: "STRING" as const,
-                        enum: actionEnum,
-                        description: "UI action for client",
-                    },
-                    data: dataSchema,
-                },
-                required: ["type", "data"],
-            },
-        },
-        required: ["response", "action"],
+        response: text || "Kuch samajh nahi aaya, kya aap dobara bata sakte hain?",
+        action: { type: "none", data: {} },
     };
 }
