@@ -1,1 +1,1 @@
-export { scheduleFirestoreSync, flushSession, loadSessionFromFirestore } from "./sessions";
+export { scheduleFirestoreSync, flushSession, loadSessionFromFirestore, logSearchToFirestore } from "./sessions";

@@ -1,76 +1,52 @@
 import { WebSocketServer, type WebSocket } from "ws";
-import { getSession, newSession, saveSession } from "./store";
-import { resolve, BASE_TOOLS } from "./agent";
+import { handleChat } from "./handlers/chat";
 import { resolveAudio, streamAudio, AUDIO_CONFIG } from "./audio";
 import { flushSession } from "./firebase";
-import { toClientResponse } from "./response";
-import type { UserData } from "./types";
-
-interface IncomingMessage {
-    sessionId: string;
-    message: string;
-    userData?: UserData | null;
-    audio?: boolean;
-}
+import type { AssistantRequest } from "./types";
 
 const clientSessions = new WeakMap<WebSocket, string>();
 
-function send(ws: WebSocket, data: Record<string, any>): void {
-    if (ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify(data));
-    }
+function send(ws: WebSocket, data: Record<string, unknown>): void {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(data));
 }
 
 async function handleMessage(ws: WebSocket, raw: string): Promise<void> {
-    let parsed: IncomingMessage;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
+    let parsed: AssistantRequest;
+    try { parsed = JSON.parse(raw); } catch {
         send(ws, { type: "error", error: "Invalid JSON" });
         return;
     }
 
-    const { sessionId, message, userData, audio: wantsAudio } = parsed;
-    if (!sessionId || !message) {
-        send(ws, { type: "error", error: "Need 'sessionId' and 'message'" });
+    if (!parsed.sessionId) {
+        send(ws, { type: "error", error: "Need 'sessionId'" });
         return;
     }
 
-    clientSessions.set(ws, sessionId);
-
-    let session = await getSession(sessionId);
-    if (!session) {
-        session = newSession(sessionId, BASE_TOOLS, userData);
-    } else if (userData) {
-        session.userData = { ...session.userData, ...userData };
-        await saveSession(session);
+    if (!parsed.message && !parsed.text && !parsed.chipClick) {
+        send(ws, { type: "error", error: "Need 'message', 'text', or 'chipClick'" });
+        return;
     }
 
-    session.history.push({ role: "user", parts: [{ text: message }] });
+    clientSessions.set(ws, parsed.sessionId);
 
     try {
-        const result = await resolve(session, (chunk) => {
+        const { response } = await handleChat(parsed, (chunk) => {
             send(ws, { type: "chunk", text: chunk });
         });
 
-        const clientResp = toClientResponse(sessionId, result);
+        send(ws, { type: "response", ...response });
 
-        send(ws, {
-            type: "response",
-            ...clientResp,
-        });
-
-        const shouldSendAudio = wantsAudio !== false && AUDIO_CONFIG.enabled;
-        if (shouldSendAudio) {
+        const shouldSendAudio = parsed.audio !== false && AUDIO_CONFIG.enabled;
+        if (shouldSendAudio && !response.audio_url) {
             try {
-                const audioBuf = await resolveAudio(result.action.type, result.response);
+                const audioBuf = await resolveAudio(response.ui_action, response.response_text);
                 streamAudio(ws, audioBuf);
-            } catch (e: any) {
-                send(ws, { type: "audio_error", error: e.message });
+            } catch (e: unknown) {
+                send(ws, { type: "audio_error", error: (e as Error).message });
             }
         }
-    } catch (e: any) {
-        send(ws, { type: "error", error: e.message ?? "Internal error" });
+    } catch (e: unknown) {
+        send(ws, { type: "error", error: (e as Error).message ?? "Internal error" });
     }
 }
 
@@ -80,21 +56,14 @@ export function startWS(port: number): void {
     wss.on("connection", (ws) => {
         console.log(`WS client connected (total: ${wss.clients.size})`);
 
-        ws.on("message", (data) => {
-            handleMessage(ws, data.toString());
-        });
+        ws.on("message", (data) => handleMessage(ws, data.toString()));
 
         ws.on("close", () => {
             console.log(`WS client disconnected (total: ${wss.clients.size})`);
-
             const sessionId = clientSessions.get(ws);
-            if (sessionId) {
-                flushSession(sessionId).catch((e) =>
-                    console.error(`[Firestore] flush on disconnect failed:`, e.message),
-                );
-            }
+            if (sessionId) flushSession(sessionId).catch((e) => console.error("[Firestore] flush failed:", (e as Error).message));
         });
     });
 
-    console.log(`WebSocket server on ws://localhost:${port}`);
+    console.log(`✓ WebSocket server on ws://localhost:${port}`);
 }

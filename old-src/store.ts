@@ -1,5 +1,8 @@
-import { createClient, type RedisClientType } from "redis";
-import type { Session, KBEntry, FeatureDetail, UserData, DriverProfile, Location } from "./types";
+import {
+    createClient,
+    type RedisClientType,
+} from "redis";
+import type { Session, KBEntry, FeatureDetail, UserData } from "./types";
 import { embed, VECTOR_DIM } from "./embeddings";
 import { scheduleFirestoreSync, loadSessionFromFirestore } from "./firebase";
 
@@ -16,20 +19,25 @@ export async function disconnectRedis() {
     await client?.quit();
 }
 
+
 const SESSION_TTL = 60 * 5;
 const sessionKey = (id: string) => `session:${id}`;
 
 export async function getSession(id: string): Promise<Session | null> {
     const raw = await client.get(sessionKey(id));
     if (raw) return JSON.parse(raw);
+
     const restored = await loadSessionFromFirestore(id);
-    if (restored) await client.set(sessionKey(id), JSON.stringify(restored), { EX: SESSION_TTL });
+    if (restored) {
+        await client.set(sessionKey(id), JSON.stringify(restored), { EX: SESSION_TTL });
+    }
     return restored;
 }
 
 export async function saveSession(session: Session): Promise<void> {
     session.updatedAt = Date.now();
     await client.set(sessionKey(session.id), JSON.stringify(session), { EX: SESSION_TTL });
+
     scheduleFirestoreSync(session);
 }
 
@@ -37,13 +45,7 @@ export async function deleteSession(id: string): Promise<void> {
     await client.del(sessionKey(id));
 }
 
-export function newSession(
-    id: string,
-    baseTools: string[],
-    userData?: UserData | null,
-    driverProfile?: DriverProfile | null,
-    location?: Location | null,
-): Session {
+export function newSession(id: string, baseTools: string[], userData?: UserData | null): Session {
     return {
         id,
         history: [],
@@ -51,14 +53,11 @@ export function newSession(
         matchedAction: null,
         activeFeature: null,
         userData: userData ?? null,
-        driverProfile: driverProfile ?? null,
-        currentLocation: location ?? null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
     };
 }
 
-// --- Knowledge Base ---
 
 const KB_PREFIX = "kb:entry:";
 const KB_INDEX_NAME = "idx:kb";
@@ -81,7 +80,7 @@ export async function ensureKBIndex(): Promise<void> {
                     DISTANCE_METRIC: "COSINE",
                 },
             },
-            { ON: "HASH", PREFIX: KB_PREFIX },
+            { ON: "HASH", PREFIX: KB_PREFIX }
         );
         console.log("RediSearch index created: " + KB_INDEX_NAME);
     }
@@ -116,32 +115,40 @@ function hashToKB(fields: Record<string, string>): KBEntry {
     return { type: "info", desc: fields["desc"] ?? "" };
 }
 
+
 export async function addKBEntry(entry: KBEntry): Promise<string> {
     const id = makeKBId();
-    const text = entry.type === "feature" ? `${entry.desc} ${entry.featureName}` : entry.desc;
-    const buf = await embed(text);
-    await client.hSet(`${KB_PREFIX}${id}`, kbToHash(entry, buf));
+    const textToEmbed =
+        entry.type === "feature"
+            ? `${entry.desc} ${entry.featureName}`
+            : entry.desc;
+    const embeddingBuf = await embed(textToEmbed);
+    await client.hSet(`${KB_PREFIX}${id}`, kbToHash(entry, embeddingBuf));
     return id;
 }
 
 export async function addKBEntries(entries: KBEntry[]): Promise<string[]> {
     const ids: string[] = [];
-    for (const e of entries) ids.push(await addKBEntry(e));
+    for (const entry of entries) ids.push(await addKBEntry(entry));
     return ids;
 }
 
 export async function getKBEntry(id: string): Promise<KBEntry | null> {
     const raw = await client.hGetAll(`${KB_PREFIX}${id}`);
-    if (!raw?.["type"]) return null;
+    if (!raw || !raw["type"]) return null;
     return hashToKB(raw);
 }
 
 export async function updateKBEntry(id: string, entry: KBEntry): Promise<boolean> {
-    if (!(await client.exists(`${KB_PREFIX}${id}`))) return false;
-    const text = entry.type === "feature" ? `${entry.desc} ${entry.featureName}` : entry.desc;
-    const buf = await embed(text);
+    const exists = await client.exists(`${KB_PREFIX}${id}`);
+    if (!exists) return false;
+    const textToEmbed =
+        entry.type === "feature"
+            ? `${entry.desc} ${entry.featureName}`
+            : entry.desc;
+    const embeddingBuf = await embed(textToEmbed);
     await client.del(`${KB_PREFIX}${id}`);
-    await client.hSet(`${KB_PREFIX}${id}`, kbToHash(entry, buf));
+    await client.hSet(`${KB_PREFIX}${id}`, kbToHash(entry, embeddingBuf));
     return true;
 }
 
@@ -156,7 +163,8 @@ export async function getAllKBEntries(): Promise<Array<KBEntry & { id: string }>
         for (const key of batch) {
             const fields = await client.hGetAll(key as string);
             if (fields["type"]) {
-                results.push({ ...hashToKB(fields), id: (key as string).replace(KB_PREFIX, "") });
+                const id = (key as string).replace(KB_PREFIX, "");
+                results.push({ ...hashToKB(fields), id });
             }
         }
     }
@@ -170,8 +178,10 @@ export async function clearKB(): Promise<void> {
     }
 }
 
+
 export async function searchKnowledgeBase(query: string, topK = 5): Promise<KBEntry[]> {
     const queryBuf = await embed(query);
+
     const results = await client.ft.search(
         KB_INDEX_NAME,
         `*=>[KNN ${topK} @embedding $BLOB AS score]`,
@@ -180,15 +190,19 @@ export async function searchKnowledgeBase(query: string, topK = 5): Promise<KBEn
             SORTBY: { BY: "score", DIRECTION: "ASC" },
             DIALECT: 2,
             RETURN: ["type", "desc", "featureName", "tools", "score"],
-        },
+        }
     );
+
     if (!results.total) return [];
+
     return results.documents
-        .filter((doc) => parseFloat((doc.value["score"] as string) ?? "1") < 0.5)
+        .filter((doc) => {
+            const score = parseFloat((doc.value["score"] as string) ?? "1");
+            return score < 0.5;
+        })
         .map((doc) => hashToKB(doc.value as Record<string, string>));
 }
 
-// --- Features ---
 
 const FEAT_PREFIX = "feature:";
 const FEAT_INDEX = "feature:index";
@@ -204,14 +218,18 @@ export async function getFeatureDetail(name: string): Promise<FeatureDetail | nu
 }
 
 export async function updateFeature(detail: FeatureDetail): Promise<boolean> {
-    if (!(await client.exists(`${FEAT_PREFIX}${detail.featureName}`))) return false;
+    const exists = await client.exists(`${FEAT_PREFIX}${detail.featureName}`);
+    if (!exists) return false;
     await client.set(`${FEAT_PREFIX}${detail.featureName}`, JSON.stringify(detail));
     return true;
 }
 
 export async function deleteFeature(name: string): Promise<boolean> {
     const removed = await client.del(`${FEAT_PREFIX}${name}`);
-    if (removed > 0) { await client.sRem(FEAT_INDEX, name); return true; }
+    if (removed > 0) {
+        await client.sRem(FEAT_INDEX, name);
+        return true;
+    }
     return false;
 }
 
@@ -231,7 +249,6 @@ export async function clearFeatures(): Promise<void> {
     await client.del(FEAT_INDEX);
 }
 
-// --- Seed ---
 
 async function cleanStaleKeys(): Promise<void> {
     for await (const keys of client.scanIterator({ MATCH: `${KB_PREFIX}*` })) {
@@ -243,7 +260,7 @@ async function cleanStaleKeys(): Promise<void> {
             }
         }
     }
-    try { await client.del("kb:index"); } catch {}
+    try { await client.del("kb:index"); } catch { }
 }
 
 export async function seedDefaults(): Promise<void> {
@@ -285,41 +302,41 @@ export async function seedDefaults(): Promise<void> {
         { type: "feature", desc: "Police station thana police help", featureName: "nearby_police", tools: [] },
         { type: "feature", desc: "Fraud check scam warning dhoka", featureName: "check_fraud", tools: [] },
         { type: "feature", desc: "Advance payment commission dena", featureName: "advance_payment", tools: [] },
-        { type: "feature", desc: "Border tax information toll naka", featureName: "border_tax", tools: [] },
-        { type: "feature", desc: "State tax information rajya kar", featureName: "state_tax", tools: [] },
-        { type: "feature", desc: "PUC pollution under control certificate", featureName: "puc_info", tools: [] },
-        { type: "feature", desc: "AITP All India Tourist Permit", featureName: "aitp_info", tools: [] },
         { type: "feature", desc: "Goodbye thanks bye end conversation shukriya dhanyavaad", featureName: "end_conversation", tools: [] },
         { type: "feature", desc: "Verify aadhaar card identity verification aadhaar number", featureName: "aadhaar_verification", tools: ["sendAadharOtpTool", "verifyAadharOtpTool"] },
         { type: "feature", desc: "Book outstation cab trip booking ride", featureName: "book_trip", tools: ["searchCabsTool"] },
     ]);
 
-    const simple = (name: string, desc: string, action: string, hint: string): FeatureDetail => ({
-        featureName: name, desc,
-        prompt: `User wants ${desc}. Respond in Hinglish: "${hint}" or similar.`,
-        tools: [], actionType: action as any,
+
+    const simpleFeature = (
+        featureName: string,
+        desc: string,
+        actionType: string,
+        responseHint: string,
+    ): FeatureDetail => ({
+        featureName,
+        desc,
+        prompt: `User wants ${desc}. Respond in Hinglish: "${responseHint}" or similar.`,
+        tools: [],
+        actionType: actionType as any,
         dataSchema: { type: "OBJECT", properties: {} },
     });
 
-    const simpleFeatures = [
-        simple("nearby_cng", "nearby CNG stations", "show_cng_stations", "Aapke paas CNG stations dhund rahi hoon"),
-        simple("nearby_petrol", "nearby petrol pumps", "show_petrol_stations", "Petrol pumps locate kar rahi hoon"),
-        simple("nearby_parking", "nearby parking", "show_parking", "Parking spots dhund rahi hoon"),
-        simple("nearby_drivers", "nearby drivers", "show_nearby_drivers", "Aas-paas ke drivers search kar rahi hoon"),
-        simple("nearby_towing", "towing services", "show_towing", "Towing services locate kar rahi hoon"),
-        simple("nearby_toilets", "nearby toilets restrooms", "show_toilets", "Toilets dhund rahi hoon"),
-        simple("nearby_taxi_stands", "nearby taxi stands", "show_taxi_stands", "Taxi stands show kar rahi hoon"),
-        simple("nearby_auto_parts", "auto parts shops", "show_auto_parts", "Auto parts shops dhund rahi hoon"),
-        simple("nearby_car_repair", "car repair shops", "show_car_repair", "Car repair shops locate kar rahi hoon"),
-        simple("nearby_hospital", "nearby hospitals", "show_hospital", "Hospitals search kar rahi hoon"),
-        simple("nearby_police", "nearby police stations", "show_police_station", "Police station show kar rahi hoon"),
-        simple("check_fraud", "fraud check information", "show_fraud", "Fraud information show kar rahi hoon"),
-        simple("advance_payment", "advance or commission payment", "show_advance", "Advance payment ka option open kar rahi hoon"),
-        simple("border_tax", "border tax information", "show_border_tax", "Border tax ki jaankari show kar rahi hoon"),
-        simple("state_tax", "state tax information", "show_state_tax", "State tax ki jaankari show kar rahi hoon"),
-        simple("puc_info", "PUC pollution control", "show_puc", "PUC ki jaankari show kar rahi hoon"),
-        simple("aitp_info", "All India Tourist Permit", "show_aitp", "AITP ki jaankari show kar rahi hoon"),
-        simple("end_conversation", "end conversation goodbye", "show_end", "Shukriya! Aapki yatra mangalmay ho"),
+    const simpleFeatures: FeatureDetail[] = [
+        simpleFeature("nearby_cng", "nearby CNG stations", "show_cng_stations", "Aapke paas CNG stations dhund rahi hoon"),
+        simpleFeature("nearby_petrol", "nearby petrol pumps", "show_petrol_stations", "Petrol pumps locate kar rahi hoon"),
+        simpleFeature("nearby_parking", "nearby parking", "show_parking", "Parking spots dhund rahi hoon"),
+        simpleFeature("nearby_drivers", "nearby drivers", "show_nearby_drivers", "Aas-paas ke drivers search kar rahi hoon"),
+        simpleFeature("nearby_towing", "towing services", "show_towing", "Towing services locate kar rahi hoon"),
+        simpleFeature("nearby_toilets", "nearby toilets restrooms", "show_toilets", "Toilets dhund rahi hoon"),
+        simpleFeature("nearby_taxi_stands", "nearby taxi stands", "show_taxi_stands", "Taxi stands show kar rahi hoon"),
+        simpleFeature("nearby_auto_parts", "auto parts shops", "show_auto_parts", "Auto parts shops dhund rahi hoon"),
+        simpleFeature("nearby_car_repair", "car repair shops", "show_car_repair", "Car repair shops locate kar rahi hoon"),
+        simpleFeature("nearby_hospital", "nearby hospitals", "show_hospital", "Hospitals search kar rahi hoon"),
+        simpleFeature("nearby_police", "nearby police stations", "show_police_station", "Police station show kar rahi hoon"),
+        simpleFeature("check_fraud", "fraud check information", "show_fraud", "Fraud information show kar rahi hoon"),
+        simpleFeature("advance_payment", "advance or commission payment", "show_advance", "Advance payment ka option open kar rahi hoon"),
+        simpleFeature("end_conversation", "end conversation goodbye", "show_end", "Shukriya! Aapki yatra mangalmay ho"),
     ];
 
     for (const f of simpleFeatures) await addFeature(f);
@@ -361,9 +378,13 @@ Set step field: need_aadhaar → otp_sent → verified/failed.`,
         dataSchema: {
             type: "OBJECT",
             properties: {
-                step: { type: "STRING", description: "Current step", enum: ["need_aadhaar", "otp_sent", "verified", "failed"] },
-                masked_phone: { type: "STRING", description: "Masked phone", nullable: true },
-                verified: { type: "BOOLEAN", description: "Verification passed", nullable: true },
+                step: {
+                    type: "STRING",
+                    description: "Current step in flow",
+                    enum: ["need_aadhaar", "otp_sent", "verified", "failed"],
+                },
+                masked_phone: { type: "STRING", description: "Masked phone number", nullable: true },
+                verified: { type: "BOOLEAN", description: "Whether verification passed", nullable: true },
             },
         },
     });

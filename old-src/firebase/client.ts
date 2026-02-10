@@ -5,7 +5,9 @@ let db: Firestore;
 
 export function getDB(): Firestore {
     if (!db) {
-        if (!getApps().length) initializeApp({ credential: applicationDefault() });
+        if (!getApps().length) {
+            initializeApp({ credential: applicationDefault() });
+        }
         db = getFirestore();
     }
     return db;
