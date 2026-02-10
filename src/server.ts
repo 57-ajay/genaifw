@@ -19,6 +19,7 @@ import {
 } from "./store";
 import { hasDeclaration } from "./tools";
 import { resolve, BASE_TOOLS } from "./agent";
+import { toClientResponse } from "./response";
 import type { KBEntry, FeatureDetail, APIResponse } from "./types";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
@@ -181,10 +182,7 @@ async function handleRequest(req: Request): Promise<Response> {
 
             const result = await resolve(session);
 
-            return ok({
-                sessionId: body.sessionId,
-                ...result,
-            });
+            return ok(toClientResponse(body.sessionId, result));
         }
 
 
@@ -216,7 +214,7 @@ export async function startServer() {
     console.log(`
   Chat:
     POST /chat  →  { sessionId, message }
-                ←  { response, action: { type, data } }
+                ←  { session_id, success, intent, ui_action, response_text, data }
 
   KB:       GET|POST|DELETE /kb    GET|PUT|DELETE /kb/:id
   Features: GET|POST|DELETE /features  GET|PUT|DELETE /features/:name

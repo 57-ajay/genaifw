@@ -51,6 +51,7 @@ export function newSession(id: string, baseTools: string[], userData?: UserData 
         history: [],
         activeTools: [...baseTools],
         matchedAction: null,
+        activeFeature: null,
         userData: userData ?? null,
         createdAt: Date.now(),
         updatedAt: Date.now(),

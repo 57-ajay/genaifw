@@ -3,6 +3,7 @@ import { getSession, newSession, saveSession } from "./store";
 import { resolve, BASE_TOOLS } from "./agent";
 import { resolveAudio, streamAudio, AUDIO_CONFIG } from "./audio";
 import { flushSession } from "./firebase";
+import { toClientResponse } from "./response";
 import type { UserData } from "./types";
 
 interface IncomingMessage {
@@ -52,11 +53,11 @@ async function handleMessage(ws: WebSocket, raw: string): Promise<void> {
             send(ws, { type: "chunk", text: chunk });
         });
 
+        const clientResp = toClientResponse(sessionId, result);
+
         send(ws, {
             type: "response",
-            sessionId,
-            response: result.response,
-            action: result.action,
+            ...clientResp,
         });
 
         const shouldSendAudio = wantsAudio !== false && AUDIO_CONFIG.enabled;

@@ -1,5 +1,5 @@
 import { ai, MODEL } from "./config";
-import type { Part, Session, AgentResponse, UIActionType, UserData } from "./types";
+import type { Part, Session, AgentResponse, UIActionType } from "./types";
 import { saveSession } from "./store";
 import { getTool, getDeclarations, buildRespondTool } from "./tools";
 import type { FunctionCall } from "@google/genai";
@@ -11,9 +11,14 @@ You ALWAYS respond in HINGLISH (natural mix of Hindi and English). Never pure En
 Use respectful tone — "Aap" not "Tu".
 
 ## Workflow
-For EVERY user request (except simple greetings):
-1. Call fetchKnowledgeBase with keywords from the user query.
-2. If result has [FEATURE] entries, call fetchFeaturePrompt with exact featureName.
+1. Call fetchKnowledgeBase ONLY when:
+   - It is the user's FIRST message in this session.
+   - The user changes topic or asks about something NEW.
+   - You do NOT already have loaded feature instructions for what the user is asking.
+   Do NOT call fetchKnowledgeBase if you are already inside a feature flow
+   (e.g. waiting for OTP, confirming details) and the user is continuing that flow.
+
+2. If KB result has [FEATURE] entries, call fetchFeaturePrompt with exact featureName.
 3. After loading feature, follow its instructions and use its tools.
 4. When ready to respond, call respondToUser with your response text and UI action.
 
@@ -24,28 +29,31 @@ For EVERY user request (except simple greetings):
 - Fill action_data fields per the feature schema.
 - Be concise — 1-2 sentences max.
 - For multiple destination cities, extract ONLY the first city as to_city.
-- NEVER skip fetchKnowledgeBase.
 - NEVER skip fetchFeaturePrompt when a [FEATURE] is found.
 - When a feature prompt tells you to call a tool, call it.
 - If the user already provided info, don't ask again — use it.`;
 
-function buildSystemPrompt(userData: UserData | null): string {
-    if (!userData) return SYSTEM_PROMPT;
-
+function buildSystemPrompt(session: Session): string {
     const parts: string[] = [];
-    if (userData.name) parts.push(`Name: ${userData.name}`);
-    if (userData.phoneNo) parts.push(`Phone: ${userData.phoneNo}`);
-    if (userData.date) parts.push(`Today's date: ${userData.date}`);
+    const ud = session.userData;
 
-    for (const [key, val] of Object.entries(userData)) {
-        if (val && !["name", "phoneNo", "date"].includes(key)) {
-            parts.push(`${key}: ${val}`);
+    if (ud) {
+        if (ud.name) parts.push(`Name: ${ud.name}`);
+        if (ud.phoneNo) parts.push(`Phone: ${ud.phoneNo}`);
+        if (ud.date) parts.push(`Today's date: ${ud.date}`);
+        for (const [key, val] of Object.entries(ud)) {
+            if (val && !["name", "phoneNo", "date"].includes(key)) {
+                parts.push(`${key}: ${val}`);
+            }
         }
     }
 
-    if (!parts.length) return SYSTEM_PROMPT;
+    if (session.activeFeature) {
+        parts.push(`Active feature: ${session.activeFeature} (skip fetchKnowledgeBase unless user changes topic)`);
+    }
 
-    return `${SYSTEM_PROMPT}\n\n## Current User Info\n${parts.join("\n")}`;
+    if (!parts.length) return SYSTEM_PROMPT;
+    return `${SYSTEM_PROMPT}\n\n## Current Context\n${parts.join("\n")}`;
 }
 
 export const BASE_TOOLS = ["fetchKnowledgeBase", "fetchFeaturePrompt"];
@@ -58,7 +66,6 @@ export async function resolve(
 ): Promise<AgentResponse> {
     return loop(session, 0, onTextChunk);
 }
-
 
 async function loop(
     session: Session,
@@ -74,7 +81,7 @@ async function loop(
 
     const respondDecl = buildRespondTool(session.matchedAction);
     const toolDecls = [...getDeclarations(session.activeTools), respondDecl];
-    const systemPrompt = buildSystemPrompt(session.userData);
+    const systemPrompt = buildSystemPrompt(session);
 
     const stream = await ai.models.generateContentStream({
         model: MODEL,
@@ -101,8 +108,8 @@ async function loop(
 
     if (fnCall?.name === RESPOND_TOOL_NAME) {
         const args = (fnCall.args ?? {}) as Record<string, any>;
-
         const responseText: string = args.response ?? text ?? "Kuch samajh nahi aaya.";
+
         session.history.push({
             role: "model",
             parts: [{ text: responseText }],
@@ -132,9 +139,13 @@ async function loop(
                 ? (fnCall.args as Record<string, string>)
                 : {};
 
-        const { msg, addTools } = fn
+        const { msg, addTools, featureName } = fn
             ? await fn(args, session)
             : { msg: `Error: tool "${fnCall.name}" not found.` };
+
+        if (featureName) {
+            session.activeFeature = featureName;
+        }
 
         if (addTools) {
             for (const t of addTools) {

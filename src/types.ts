@@ -73,6 +73,7 @@ export type ToolFn = (
 export interface ToolResult {
     msg: string;
     addTools?: string[];
+    featureName?: string;
 }
 
 
@@ -88,6 +89,7 @@ export interface Session {
     history: ChatMessage[];
     activeTools: string[];
     matchedAction: MatchedAction | null;
+    activeFeature: string | null;
     userData: UserData | null;
     createdAt: number;
     updatedAt: number;

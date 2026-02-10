@@ -10,7 +10,10 @@ const declarations: Record<string, ToolDeclaration> = {
 
     fetchKnowledgeBase: {
         name: "fetchKnowledgeBase",
-        description: "Search knowledge base for info or features matching user query. ALWAYS call this first.",
+        description:
+            "Search knowledge base for info or features matching user query. " +
+            "Call this on the FIRST user message or when the user changes topic. " +
+            "Do NOT call if you are already handling a feature flow and the user is continuing it.",
         parameters: {
             type: Type.OBJECT,
             properties: {
@@ -72,37 +75,6 @@ const declarations: Record<string, ToolDeclaration> = {
 };
 
 
-export function buildRespondDeclaration(matched: MatchedAction | null): ToolDeclaration {
-    const actionEnum = matched
-        ? [matched.actionType]
-        : ALL_UI_ACTIONS;
-
-    const dataProps = matched?.dataSchema?.properties ?? {};
-
-    return {
-        name: RESPOND_TOOL,
-        description:
-            "Send your final Hinglish response to the user along with a UI action. " +
-            "Call this ONCE when you are ready to respond. Do NOT call any other tool after this.",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {
-                response: {
-                    type: Type.STRING,
-                    description: "Concise Hinglish response text (1-2 sentences) for the user",
-                },
-                action_type: {
-                    type: Type.STRING,
-                    description: `UI action type. Allowed: ${actionEnum.join(", ")}`,
-                },
-                ...dataProps,
-            },
-            required: ["response", "action_type"],
-        },
-    } as any;
-}
-
-
 function formatKBResults(entries: KBEntry[]): string {
     if (!entries.length) return "No relevant info found in knowledge base.";
 
@@ -123,8 +95,18 @@ function formatKBResults(entries: KBEntry[]): string {
 
 const implementations: Record<string, ToolFn> = {
 
-    fetchKnowledgeBase: async (args) => {
+    fetchKnowledgeBase: async (args, session) => {
         const results = await searchKnowledgeBase(args["query"] ?? "");
+
+        const featureEntry = results.find((r) => r.type === "feature") as
+            | Extract<KBEntry, { type: "feature" }>
+            | undefined;
+
+        if (featureEntry && featureEntry.featureName !== session.activeFeature) {
+            session.activeFeature = null;
+            session.matchedAction = null;
+        }
+
         return { msg: formatKBResults(results) };
     },
 
@@ -141,6 +123,7 @@ const implementations: Record<string, ToolFn> = {
         return {
             msg: detail.prompt,
             addTools: detail.tools,
+            featureName: name,
         };
     },
 
