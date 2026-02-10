@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  raahi-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8005:8005"
+    volumes:
+      # Mount source code for hot reload
+      - ./app:/app/app
+      - ./config:/app/config
+      # Mount .env file for environment variables
+      - ./.env:/app/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Optional: Connect to local Redis if needed
+    # depends_on:
+    #   - redis
+    restart: unless-stopped
+
+  # Optional: Redis service for local development
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis-data:/data
+  #   restart: unless-stopped
+
+# volumes:
+#   redis-data:

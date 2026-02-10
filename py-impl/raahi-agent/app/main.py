@@ -1,0 +1,111 @@
+"""
+Raahi AI Assistant API
+
+A voice-enabled AI assistant for truck drivers with:
+- Intent classification using Vertex AI Gemini
+- Duty/trip search using Typesense
+- Nearby fuel station search (geo-based)
+- TTS with Google Cloud Chirp 3 HD (Aoede voice)
+- Audio caching with Redis
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from app.api import router
+from app.services import get_cache_service
+from app.services.firebase_service import get_firebase_service
+from config import get_settings
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
+    logger.info("Starting Raahi Assistant API...")
+    
+    # Initialize Firebase on startup
+    firebase = get_firebase_service()
+    await firebase.initialize()
+    
+    yield
+    
+    # Cleanup
+    logger.info("Shutting down Raahi Assistant API...")
+    cache = get_cache_service()
+    await cache.close()
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    settings = get_settings()
+
+    app = FastAPI(
+        title="Raahi AI Assistant",
+        description=__doc__,
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    # CORS middleware for client applications
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Configure appropriately for production
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Custom exception handler for validation errors (422)
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Log and return detailed validation errors."""
+        body = await request.body()
+        logger.error(f"Validation error for {request.method} {request.url.path}")
+        logger.error(f"Request body: {body.decode('utf-8')}")
+        logger.error(f"Validation errors: {exc.errors()}")
+
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "detail": exc.errors(),
+                "body": body.decode('utf-8') if body else None,
+            },
+        )
+
+    # Include routers
+    app.include_router(router)
+
+    @app.get("/health")
+    async def health_check():
+        """Health check endpoint."""
+        return {"status": "healthy", "service": "raahi-assistant"}
+
+    return app
+
+
+# Create app instance
+app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        "app.main:app",
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=True,
+    )
