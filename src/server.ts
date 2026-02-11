@@ -2,7 +2,7 @@ import {
     connectRedis, seedDefaults,
     addKBEntries, getKBEntry, updateKBEntry, deleteKBEntry, getAllKBEntries, clearKB,
     addFeature, getFeatureDetail, updateFeature, deleteFeature, getAllFeatures, clearFeatures,
-    getSession, deleteSession,
+    deleteSession,
 } from "./store";
 import { hasDeclaration } from "./tools";
 import { handleChat } from "./handlers/chat";
@@ -19,8 +19,31 @@ function json<T>(data: T, status = 200): Response {
 function ok<T>(data: T): Response { return json<APIResponse<T>>({ ok: true, data }); }
 function err(error: string, status = 400): Response { return json<APIResponse>({ ok: false, error }, status); }
 
-async function readBody<T>(req: Request): Promise<T> { return (await req.json()) as T; }
+async function readBody<T>(req: Request): Promise<T> {
+    const req_d = await req.json() as T;
+    // console.dir(req_d, { depth: null });
+    return req_d;
+}
 function extractId(path: string, prefix: string): string { return path.slice(prefix.length); }
+
+/** Maps incoming snake_case HTTP fields to internal camelCase. Accepts both formats for compat. */
+function normalizeRequest(raw: Record<string, unknown>): AssistantRequest {
+    // console.log("normalizing");
+    return {
+        sessionId: "69ajay69"/*(raw.session_id ?? raw.sessionId ?? "") as string*/,
+        message: (raw.message ?? "") as string,
+        text: (raw.text) as string | undefined,
+        driverProfile: (raw.driver_profile ?? raw.driverProfile) as AssistantRequest["driverProfile"],
+        currentLocation: (raw.current_location ?? raw.currentLocation) as AssistantRequest["currentLocation"],
+        userData: (raw.user_data ?? raw.userData) as AssistantRequest["userData"],
+        audio: (raw.audio) as boolean | undefined,
+        interactionCount: (raw.interaction_count ?? raw.interactionCount) as number | undefined,
+        isHome: (raw.is_home ?? raw.isHome) as boolean | undefined,
+        requestCount: (raw.request_count ?? raw.requestCount) as number | undefined,
+        chipClick: (raw.chip_click ?? raw.chipClick) as string | undefined,
+        phoneNo: (raw.phone_no ?? raw.phoneNo) as string | undefined,
+    };
+}
 
 async function handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -30,24 +53,33 @@ async function handleRequest(req: Request): Promise<Response> {
     try {
         // --- Chat endpoints ---
         if (path === "/chat" && method === "POST") {
-            const body = await readBody<AssistantRequest>(req);
-            if (!body.sessionId) return err("Need 'sessionId'");
-            if (!body.message && !body.text && !body.chipClick) return err("Need 'message', 'text', or 'chipClick'");
+            const raw = await readBody<Record<string, unknown>>(req);
+            const body = normalizeRequest(raw);
+            if (!body.sessionId) return err("Need 'session_id'");
+            if (!body.message && !body.text && !body.chipClick) return err("Need 'message', 'text', or 'chip_click'");
 
             const { response } = await handleChat(body);
             return json<AssistantResponse>(response);
         }
 
         if (path === "/query-with-audio" && method === "POST") {
-            const body = await readBody<AssistantRequest>(req);
-            if (!body.sessionId) return err("Need 'sessionId'");
+            const raw = await readBody<Record<string, unknown>>(req);
+
+
+
+            const body = normalizeRequest(raw);
+            console.dir(body, { depth: null });
+            if (!body.sessionId) return err("Need 'session_id'");
+
 
             const { response } = await handleChat(body);
+            console.dir(response, { depth: null });
             const shouldStream = body.audio !== false && AUDIO_CONFIG.enabled && !response.audio_url;
 
             if (!shouldStream) {
                 return json(response);
             }
+
 
             // SSE: stream JSON response first, then audio chunks
             const stream = new ReadableStream<Uint8Array>({

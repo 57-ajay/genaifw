@@ -6,7 +6,7 @@ import type {
     Session,
 } from "../types";
 import { ACTION_TO_INTENT } from "../types";
-import { getSession, newSession, saveSession } from "../store";
+import { getSession, newSession } from "../store";
 import { resolve, BASE_TOOLS } from "../agent";
 import {
     searchTrips,
@@ -51,8 +51,9 @@ export async function handleChat(
     req: AssistantRequest,
     onTextChunk?: (chunk: string) => void,
 ): Promise<HandleResult> {
+
     const sessionId = req.sessionId;
-    const text = (req.message || req.text || "").trim();
+    const text = (req.text || req.message || "").trim();
     const interactionCount = req.interactionCount;
     const isHome = req.isHome ?? true;
     const requestCount = req.requestCount;
@@ -160,7 +161,7 @@ export async function handleChat(
             interactionCount: interactionCount ?? 0,
             pickupCity: (query?.["pickup_city"] as string) ?? undefined,
             dropCity: (query?.["drop_city"] as string) ?? undefined,
-        }).catch(() => {});
+        }).catch(() => { });
     }
 
     return {
