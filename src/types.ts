@@ -24,6 +24,7 @@ export type UIActionType =
     | "show_end"
     | "show_otp_input"
     | "show_verification_result"
+    | "show_ev_charging"
     | "none";
 
 export const ALL_UI_ACTIONS: UIActionType[] = [
@@ -33,7 +34,7 @@ export const ALL_UI_ACTIONS: UIActionType[] = [
     "show_police_station", "show_fraud", "show_info", "show_fraud_result",
     "show_advance", "show_border_tax", "show_state_tax", "show_puc",
     "show_aitp", "show_map", "show_end", "show_otp_input",
-    "show_verification_result", "none",
+    "show_verification_result", "show_ev_charging", "none",
 ];
 
 export type IntentType =
@@ -59,6 +60,7 @@ export type IntentType =
     | "puc"
     | "aitp"
     | "end"
+    | "ev_charging"
     | "generic";
 
 // --- Request types ---
@@ -253,5 +255,6 @@ export const ACTION_TO_INTENT: Record<UIActionType, IntentType> = {
     show_map: "generic",
     show_otp_input: "generic",
     show_verification_result: "generic",
+    show_ev_charging: "ev_charging",
     none: "generic",
 };

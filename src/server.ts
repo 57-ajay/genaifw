@@ -10,7 +10,7 @@ import { resolveAudio, streamAudioRaw, AUDIO_CONFIG } from "./audio";
 import { loadAudioConfig } from "./services/audio-config";
 import type { KBEntry, FeatureDetail, APIResponse, AssistantRequest, AssistantResponse } from "./types";
 
-const PORT = parseInt(process.env.PORT ?? "3000", 10);
+const PORT = parseInt(process.env.PORT ?? "5173", 10);
 
 function json<T>(data: T, status = 200): Response {
     return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
