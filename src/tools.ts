@@ -1,11 +1,14 @@
 import { Type } from "@google/genai";
-import type { ToolDeclaration, ToolFn, KBEntry, MatchedAction } from "./types";
-import { ALL_UI_ACTIONS } from "./types";
+import type { ToolDeclaration, ToolFn, KBEntry, MatchedAction, Session, ToolResult } from "./types";
 import { searchKnowledgeBase, getFeatureDetail } from "./store";
+import { getToolDeclarationsByNames, getToolConfig, getAllUIActions } from "./registry";
+import { executeDynamicTool } from "./executor";
 
 export const RESPOND_TOOL = "respondToUser";
 
-const declarations: Record<string, ToolDeclaration> = {
+// ─── Framework Tool Declarations (always available) ───
+
+const frameworkDeclarations: Record<string, ToolDeclaration> = {
     fetchKnowledgeBase: {
         name: "fetchKnowledgeBase",
         description:
@@ -27,38 +30,9 @@ const declarations: Record<string, ToolDeclaration> = {
             required: ["featureName"],
         },
     },
-    sendAadharOtpTool: {
-        name: "sendAadharOtpTool",
-        description: "Send Aadhaar verification OTP to a 12-digit Aadhaar number",
-        parameters: {
-            type: Type.OBJECT,
-            properties: { aadharNumber: { type: Type.STRING, description: "12-digit Aadhaar number" } },
-            required: ["aadharNumber"],
-        },
-    },
-    verifyAadharOtpTool: {
-        name: "verifyAadharOtpTool",
-        description: "Verify Aadhaar using a 4-digit OTP",
-        parameters: {
-            type: Type.OBJECT,
-            properties: { otp: { type: Type.STRING, description: "4-digit OTP" } },
-            required: ["otp"],
-        },
-    },
-    searchCabsTool: {
-        name: "searchCabsTool",
-        description: "Search available cabs for outstation trip",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {
-                pickup: { type: Type.STRING, description: "Pickup location" },
-                destination: { type: Type.STRING, description: "Destination" },
-                date: { type: Type.STRING, description: "Travel date (optional)" },
-            },
-            required: ["pickup", "destination"],
-        },
-    },
 };
+
+// ─── Framework Tool Implementations ───
 
 function formatKBResults(entries: KBEntry[]): string {
     if (!entries.length) return "No relevant info found in knowledge base.";
@@ -71,7 +45,7 @@ function formatKBResults(entries: KBEntry[]): string {
         .join("\n\n");
 }
 
-const implementations: Record<string, ToolFn> = {
+const frameworkImplementations: Record<string, ToolFn> = {
     fetchKnowledgeBase: async (args, session) => {
         const results = await searchKnowledgeBase(args["query"] ?? "");
         const feat = results.find((r) => r.type === "feature") as Extract<KBEntry, { type: "feature" }> | undefined;
@@ -85,46 +59,71 @@ const implementations: Record<string, ToolFn> = {
         const name = args["featureName"] ?? "";
         const detail = await getFeatureDetail(name);
         if (!detail) return { msg: `Feature "${name}" not found.` };
-        session.matchedAction = { actionType: detail.actionType, dataSchema: detail.dataSchema };
-        return { msg: detail.prompt, addTools: detail.tools, featureName: name };
-    },
-    sendAadharOtpTool: async (args) => {
-        console.log(`  → OTP sent to Aadhaar: ${args["aadharNumber"]}`);
-        return { msg: "OTP sent successfully to the registered mobile number." };
-    },
-    verifyAadharOtpTool: async (args) => {
-        const otp = args["otp"] ?? "";
-        const ok = otp === "6969";
-        console.log(`  → OTP verify: ${otp} → ${ok ? "✓" : "✗"}`);
-        return { msg: ok ? "Aadhaar verified successfully. User identity confirmed." : "Incorrect OTP. Verification failed." };
-    },
-    searchCabsTool: async (args) => {
-        console.log(`  → Searching cabs: ${args["pickup"]} → ${args["destination"]}`);
+
+        // Set matched action with ALL possible actions for this feature
+        session.matchedAction = {
+            actions: detail.actions.map((a) => a.uiAction),
+            dataSchema: detail.dataSchema,
+        };
+
         return {
-            msg: JSON.stringify({
-                results: [
-                    { driver: "Raju", car: "Swift Dzire", price: 2500, rating: 4.5 },
-                    { driver: "Amit", car: "Innova", price: 4200, rating: 4.8 },
-                ],
-            }),
+            msg: detail.prompt,
+            addTools: detail.tools.map((t) => t.name),
+            featureName: name,
         };
     },
 };
 
+// ─── Public API ───
+
+/**
+ * Get tool declarations by names.
+ * Checks framework tools first, then registry (dynamic tools).
+ */
 export function getDeclarations(names: string[]): ToolDeclaration[] {
-    return names.map((n) => declarations[n]).filter((d): d is ToolDeclaration => !!d);
+    const result: ToolDeclaration[] = [];
+    for (const n of names) {
+        const fw = frameworkDeclarations[n];
+        if (fw) { result.push(fw); continue; }
+        // Dynamic tools from registry
+        const fromRegistry = getToolDeclarationsByNames([n]);
+        result.push(...fromRegistry);
+    }
+    return result;
 }
 
+/**
+ * Resolve and execute a tool by name.
+ * Checks framework tools first, then dynamic (registry + executor).
+ */
 export function getTool(name: string): ToolFn | undefined {
-    return implementations[name];
+    // Framework tool?
+    const fw = frameworkImplementations[name];
+    if (fw) return fw;
+
+    // Dynamic tool from registry?
+    const config = getToolConfig(name);
+    if (config) {
+        return (args: Record<string, string>, session: Session): Promise<ToolResult> =>
+            executeDynamicTool(name, args, session);
+    }
+
+    return undefined;
 }
 
+/**
+ * Check if a tool declaration exists (framework or dynamic).
+ */
 export function hasDeclaration(name: string): boolean {
-    return name in declarations;
+    return name in frameworkDeclarations || !!getToolConfig(name);
 }
 
+/**
+ * Build the respondToUser tool declaration.
+ * Constrains action_type to matched feature's actions or all registered actions.
+ */
 export function buildRespondTool(matched: MatchedAction | null): ToolDeclaration {
-    const actionEnum = matched ? [matched.actionType] : ALL_UI_ACTIONS;
+    const actionEnum = matched?.actions?.length ? matched.actions : getAllUIActions();
     const dataSchema = matched?.dataSchema ?? { type: Type.OBJECT, properties: {} };
 
     return {

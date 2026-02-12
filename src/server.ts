@@ -4,13 +4,13 @@ import {
     addFeature, getFeatureDetail, updateFeature, deleteFeature, getAllFeatures, clearFeatures,
     deleteSession,
 } from "./store";
-import { hasDeclaration } from "./tools";
 import { handleChat } from "./handlers/chat";
 import { resolveAudio, streamAudioRaw, AUDIO_CONFIG } from "./audio";
 import { loadAudioConfig } from "./services/audio-config";
-import type { KBEntry, FeatureDetail, APIResponse, AssistantRequest, AssistantResponse } from "./types";
+import { registerBuiltins } from "./builtins";
+import type { KBEntry, FeatureDetail, APIResponse, AssistantRequest, AssistantResponse, ToolConfig } from "./types";
 
-const PORT = parseInt(process.env.PORT ?? "5173", 10);
+const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
 function json<T>(data: T, status = 200): Response {
     return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
@@ -20,14 +20,14 @@ function ok<T>(data: T): Response { return json<APIResponse<T>>({ ok: true, data
 function err(error: string, status = 400): Response { return json<APIResponse>({ ok: false, error }, status); }
 
 async function readBody<T>(req: Request): Promise<T> {
-    const req_d = await req.json() as T;
-    return req_d;
+    return (await req.json()) as T;
 }
+
 function extractId(path: string, prefix: string): string { return path.slice(prefix.length); }
 
 function normalizeRequest(raw: Record<string, unknown>): AssistantRequest {
     return {
-        sessionId: "1234qwer4321"/*(raw.session_id ?? raw.sessionId ?? "") as string*/,
+        sessionId: raw.sessionId as string,
         message: (raw.message ?? "") as string,
         text: (raw.text) as string | undefined,
         driverProfile: (raw.driver_profile ?? raw.driverProfile) as AssistantRequest["driverProfile"],
@@ -42,12 +42,66 @@ function normalizeRequest(raw: Record<string, unknown>): AssistantRequest {
     };
 }
 
+/**
+ * Validate a FeatureDetail from dashboard input.
+ */
+function validateFeature(body: FeatureDetail): string | null {
+    if (!body.featureName) return "Need 'featureName'";
+    if (!body.prompt) return "Need 'prompt'";
+    if (!body.actions?.length) return "Need at least one action in 'actions'";
+    if (!body.defaultAction) return "Need 'defaultAction'";
+    if (!body.dataSchema) return "Need 'dataSchema'";
+
+    // Validate each action
+    for (const a of body.actions) {
+        if (!a.uiAction || !a.intent) return `Each action needs 'uiAction' and 'intent'`;
+    }
+
+    // Validate defaultAction is in actions
+    if (!body.actions.some((a) => a.uiAction === body.defaultAction)) {
+        return `'defaultAction' (${body.defaultAction}) must be in 'actions'`;
+    }
+
+    // Validate tool configs
+    if (body.tools?.length) {
+        for (const tc of body.tools) {
+            const toolErr = validateToolConfig(tc);
+            if (toolErr) return `Tool "${tc.name}": ${toolErr}`;
+        }
+    }
+
+    return null;
+}
+
+function validateToolConfig(tc: ToolConfig): string | null {
+    if (!tc.name) return "needs 'name'";
+    if (!tc.declaration?.description) return "needs 'declaration.description'";
+    if (!tc.declaration?.parameters) return "needs 'declaration.parameters'";
+    if (!tc.implementation?.type) return "needs 'implementation.type'";
+
+    const impl = tc.implementation;
+    if (impl.type === "http") {
+        if (!impl.url) return "HTTP impl needs 'url'";
+        if (!impl.method) return "HTTP impl needs 'method'";
+    } else if (impl.type === "static") {
+        if (!impl.response) return "Static impl needs 'response'";
+    } else if (impl.type === "builtin") {
+        if (!impl.handler) return "Builtin impl needs 'handler'";
+    } else {
+        return `Unknown implementation type: ${(impl as Record<string, unknown>).type}`;
+    }
+
+    return null;
+}
+
 async function handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
 
     try {
+        // ─── Chat ───
+
         if (path === "/chat" && method === "POST") {
             const raw = await readBody<Record<string, unknown>>(req);
             const body = normalizeRequest(raw);
@@ -61,11 +115,9 @@ async function handleRequest(req: Request): Promise<Response> {
         if (path === "/query-with-audio" && method === "POST") {
             const raw = await readBody<Record<string, unknown>>(req);
             const body = normalizeRequest(raw);
-            // console.dir(body, { depth: null });
             if (!body.sessionId) return err("Need 'session_id'");
 
             const { response } = await handleChat(body);
-            // console.dir(response, { depth: null });
 
             const shouldStreamAudio = body.audio !== false
                 && AUDIO_CONFIG.enabled
@@ -87,9 +139,7 @@ async function handleRequest(req: Request): Promise<Response> {
             const stream = new ReadableStream<Uint8Array>({
                 async start(controller) {
                     try {
-                        const jsonLine = JSON.stringify(response) + "\n";
-                        controller.enqueue(new TextEncoder().encode(jsonLine));
-
+                        controller.enqueue(new TextEncoder().encode(JSON.stringify(response) + "\n"));
                         const audioBuf = await resolveAudio(response.ui_action, response.response_text);
                         for (const chunk of streamAudioRaw(audioBuf)) {
                             controller.enqueue(new Uint8Array(chunk));
@@ -113,15 +163,16 @@ async function handleRequest(req: Request): Promise<Response> {
             });
         }
 
-        // --- KB admin ---
+        // ─── KB Admin ───
+
         if (path === "/kb" && method === "GET") return ok(await getAllKBEntries());
         if (path === "/kb" && method === "POST") {
             const body = await readBody<KBEntry | KBEntry[]>(req);
             const entries = Array.isArray(body) ? body : [body];
             for (const e of entries) {
                 if (!e.type || !e.desc) return err("Each entry needs 'type' and 'desc'");
-                if (e.type === "feature" && (!e.featureName || !e.tools?.length))
-                    return err("Feature entries need 'featureName' and 'tools'");
+                if (e.type === "feature" && !e.featureName)
+                    return err("Feature entries need 'featureName'");
             }
             const ids = await addKBEntries(entries);
             return ok({ added: ids.length, ids });
@@ -143,58 +194,79 @@ async function handleRequest(req: Request): Promise<Response> {
             return (await deleteKBEntry(id)) ? ok({ deleted: id }) : err("Not found", 404);
         }
 
-        // --- Features admin ---
+        // ─── Features Admin (new schema) ───
+
         if (path === "/features" && method === "GET") return ok(await getAllFeatures());
+
         if (path === "/features" && method === "POST") {
             const body = await readBody<FeatureDetail>(req);
-            if (!body.featureName || !body.prompt || !body.actionType || !body.dataSchema)
-                return err("Need 'featureName', 'prompt', 'actionType', 'dataSchema'");
-            if (body.tools?.length) {
-                const missing = body.tools.filter((t) => !hasDeclaration(t));
-                if (missing.length) return err(`Missing tool declarations: ${missing.join(", ")}`);
-            }
+            const validationErr = validateFeature(body);
+            if (validationErr) return err(validationErr);
+
+            // Ensure tools default
+            body.tools = body.tools ?? [];
+            body.audioMappings = body.audioMappings ?? {};
+            body.desc = body.desc ?? "";
+
             await addFeature(body);
             return ok({ added: body.featureName });
         }
-        if (path === "/features" && method === "DELETE") { await clearFeatures(); return ok({ cleared: true }); }
+
+        if (path === "/features" && method === "DELETE") {
+            await clearFeatures();
+            return ok({ cleared: true });
+        }
 
         if (path.startsWith("/features/") && method === "GET") {
             const detail = await getFeatureDetail(extractId(path, "/features/"));
             return detail ? ok(detail) : err("Not found", 404);
         }
+
         if (path.startsWith("/features/") && method === "PUT") {
             const name = extractId(path, "/features/");
             const body = await readBody<Partial<FeatureDetail>>(req);
             const existing = await getFeatureDetail(name);
             if (!existing) return err("Not found", 404);
+
             const merged: FeatureDetail = {
                 featureName: name,
                 desc: body.desc ?? existing.desc,
                 prompt: body.prompt ?? existing.prompt,
                 tools: body.tools ?? existing.tools,
-                actionType: body.actionType ?? existing.actionType,
+                actions: body.actions ?? existing.actions,
+                defaultAction: body.defaultAction ?? existing.defaultAction,
                 dataSchema: body.dataSchema ?? existing.dataSchema,
+                audioMappings: body.audioMappings ?? existing.audioMappings,
+                postProcessor: body.postProcessor ?? existing.postProcessor,
             };
+
+            // Validate tools if provided
             if (body.tools?.length) {
-                const missing = body.tools.filter((t) => !hasDeclaration(t));
-                if (missing.length) return err(`Missing tool declarations: ${missing.join(", ")}`);
+                for (const tc of body.tools) {
+                    const toolErr = validateToolConfig(tc);
+                    if (toolErr) return err(`Tool "${tc.name}": ${toolErr}`);
+                }
             }
+
             await updateFeature(merged);
             return ok({ updated: name });
         }
+
         if (path.startsWith("/features/") && method === "DELETE") {
             const name = extractId(path, "/features/");
             return (await deleteFeature(name)) ? ok({ deleted: name }) : err("Not found", 404);
         }
 
-        // --- Session ---
+        // ─── Session ───
+
         if (path.startsWith("/session/") && method === "DELETE") {
             const id = extractId(path, "/session/");
             await deleteSession(id);
             return ok({ deleted: id });
         }
 
-        // --- Health ---
+        // ─── Health ───
+
         if (path === "/health") return ok({ status: "ok", timestamp: Date.now() });
 
         return err("Not found", 404);
@@ -206,8 +278,9 @@ async function handleRequest(req: Request): Promise<Response> {
 
 export async function startServer() {
     await connectRedis(process.env.REDIS_URL ?? "redis://localhost:6379");
-    await seedDefaults();
+    registerBuiltins();
     loadAudioConfig();
+    await seedDefaults();
 
     Bun.serve({ port: PORT, fetch: handleRequest });
 

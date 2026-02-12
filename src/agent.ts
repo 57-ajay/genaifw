@@ -45,7 +45,6 @@ If user asks something outside your features, classify as "information" and sugg
 function buildSystemPrompt(session: Session): string {
     const parts: string[] = [];
 
-    // User data context
     const ud = session.userData;
     if (ud) {
         if (ud.name) parts.push(`Name: ${ud.name}`);
@@ -56,7 +55,6 @@ function buildSystemPrompt(session: Session): string {
         }
     }
 
-    // Driver profile context
     const dp = session.driverProfile;
     if (dp) {
         const lines: string[] = [`Driver: ${dp.name} (ID: ${dp.id})`];
@@ -75,7 +73,6 @@ function buildSystemPrompt(session: Session): string {
         parts.push("## Driver Profile\n" + lines.join("\n"));
     }
 
-    // Location context
     const loc = session.currentLocation;
     if (loc) parts.push(`Location: (${loc.latitude}, ${loc.longitude})`);
 

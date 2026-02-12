@@ -1,70 +1,88 @@
-export type UIActionType =
-    | "entry"
-    | "show_duties_list"
-    | "show_cng_stations"
-    | "show_petrol_stations"
-    | "show_parking"
-    | "show_nearby_drivers"
-    | "show_towing"
-    | "show_toilets"
-    | "show_taxi_stands"
-    | "show_auto_parts"
-    | "show_car_repair"
-    | "show_hospital"
-    | "show_police_station"
-    | "show_fraud"
-    | "show_info"
-    | "show_fraud_result"
-    | "show_advance"
-    | "show_border_tax"
-    | "show_state_tax"
-    | "show_puc"
-    | "show_aitp"
-    | "show_map"
-    | "show_end"
-    | "show_otp_input"
-    | "show_verification_result"
-    | "show_ev_charging"
-    | "none";
+export type UIActionType = string;
+export type IntentType = string;
 
-export const ALL_UI_ACTIONS: UIActionType[] = [
-    "entry", "show_duties_list", "show_cng_stations", "show_petrol_stations",
-    "show_parking", "show_nearby_drivers", "show_towing", "show_toilets",
-    "show_taxi_stands", "show_auto_parts", "show_car_repair", "show_hospital",
-    "show_police_station", "show_fraud", "show_info", "show_fraud_result",
-    "show_advance", "show_border_tax", "show_state_tax", "show_puc",
-    "show_aitp", "show_map", "show_end", "show_otp_input",
-    "show_verification_result", "show_ev_charging", "none",
-];
+// Action <-> Intent Mapping
 
-export type IntentType =
-    | "entry"
-    | "get_duties"
-    | "cng_pumps"
-    | "parking"
-    | "petrol_pumps"
-    | "nearby_drivers"
-    | "towing"
-    | "toilets"
-    | "taxi_stands"
-    | "auto_parts"
-    | "car_repair"
-    | "hospital"
-    | "police_station"
-    | "fraud"
-    | "information"
-    | "fraud_check_found"
-    | "advance"
-    | "border_tax"
-    | "state_tax"
-    | "puc"
-    | "aitp"
-    | "end"
-    | "ev_charging"
-    | "generic";
+export interface ActionMapping {
+    uiAction: string;
+    intent: string;
+    audioKey?: string; // optional override key for audio URL lookup
+}
 
-// --- Request types ---
+//  Tool Configuration
 
+export interface ToolDeclaration {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+}
+
+export interface HttpToolImpl {
+    type: "http";
+    url: string;                              // supports {{param}} and {{ENV.VAR}}
+    method: "GET" | "POST";
+    headers?: Record<string, string>;         // supports {{ENV.VAR}}
+    bodyTemplate?: Record<string, unknown>;   // supports {{param}} placeholders
+    responseMapping?: string;                 // dot-path to extract (e.g. "data.results")
+    responseTemplate?: string;                // template for message back to AI
+    timeout?: number;                         // ms, default 10000
+}
+
+export interface StaticToolImpl {
+    type: "static";
+    response: string;
+}
+
+export interface BuiltinToolImpl {
+    type: "builtin";
+    handler: string; // name of registered handler function
+}
+
+export type ToolImplementation = HttpToolImpl | StaticToolImpl | BuiltinToolImpl;
+
+export interface ToolConfig {
+    name: string;
+    declaration: {
+        description: string;
+        parameters: Record<string, unknown>;
+    };
+    implementation: ToolImplementation;
+}
+
+// Feature Detail
+
+export interface FeatureDetail {
+    featureName: string;
+    desc: string;
+    prompt: string;
+
+    actions: ActionMapping[];
+    defaultAction: string;
+
+    audioMappings?: Record<string, string | null>;
+
+    tools: ToolConfig[];
+
+    dataSchema: Record<string, unknown>;
+
+    // Optional post-processor hook name (e.g. "duties", "fraud")
+    postProcessor?: string;
+}
+
+// Knowledge Base
+
+export type KBEntry =
+    | { type: "info"; desc: string }
+    | { type: "feature"; desc: string; featureName: string; tools: string[] };
+
+// Matched Action (for respondToUser constraint)
+
+export interface MatchedAction {
+    actions: string[];                   // all possible UI actions for matched feature
+    dataSchema: Record<string, unknown>;
+}
+
+//Request types
 export interface Location {
     latitude: number;
     longitude: number;
@@ -115,6 +133,13 @@ export interface DriverProfile {
     [key: string]: unknown;
 }
 
+export interface UserData {
+    name?: string;
+    phoneNo?: string;
+    date?: string;
+    [key: string]: string | undefined;
+}
+
 export interface AssistantRequest {
     sessionId: string;
     message: string;
@@ -130,7 +155,7 @@ export interface AssistantRequest {
     phoneNo?: string;
 }
 
-// --- Response types ---
+// Response types
 
 export interface AssistantResponse {
     session_id: string;
@@ -146,7 +171,7 @@ export interface AssistantResponse {
     audio_url?: string | null;
 }
 
-// --- Agent types ---
+//  Agent types
 
 export interface AgentResponse {
     response: string;
@@ -154,30 +179,6 @@ export interface AgentResponse {
         type: UIActionType;
         data: Record<string, unknown>;
     };
-}
-
-export interface MatchedAction {
-    actionType: UIActionType;
-    dataSchema: Record<string, unknown>;
-}
-
-export type KBEntry =
-    | { type: "info"; desc: string }
-    | { type: "feature"; desc: string; featureName: string; tools: string[] };
-
-export interface FeatureDetail {
-    featureName: string;
-    desc: string;
-    prompt: string;
-    tools: string[];
-    actionType: UIActionType;
-    dataSchema: Record<string, unknown>;
-}
-
-export interface ToolDeclaration {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
 }
 
 export type ToolFn = (
@@ -191,12 +192,7 @@ export interface ToolResult {
     featureName?: string;
 }
 
-export interface UserData {
-    name?: string;
-    phoneNo?: string;
-    date?: string;
-    [key: string]: string | undefined;
-}
+//  Session
 
 export interface Session {
     id: string;
@@ -221,40 +217,10 @@ export type Part =
     | { functionCall: { name: string; args: Record<string, string> } }
     | { functionResponse: { name: string; response: { content: string } } };
 
+//  API
+
 export interface APIResponse<T = unknown> {
     ok: boolean;
     data?: T;
     error?: string;
 }
-
-// --- Intent mapping ---
-
-export const ACTION_TO_INTENT: Record<UIActionType, IntentType> = {
-    entry: "entry",
-    show_duties_list: "get_duties",
-    show_cng_stations: "cng_pumps",
-    show_petrol_stations: "petrol_pumps",
-    show_parking: "parking",
-    show_nearby_drivers: "nearby_drivers",
-    show_towing: "towing",
-    show_toilets: "toilets",
-    show_taxi_stands: "taxi_stands",
-    show_auto_parts: "auto_parts",
-    show_car_repair: "car_repair",
-    show_hospital: "hospital",
-    show_police_station: "police_station",
-    show_fraud: "fraud",
-    show_info: "information",
-    show_fraud_result: "fraud_check_found",
-    show_advance: "advance",
-    show_border_tax: "border_tax",
-    show_state_tax: "state_tax",
-    show_puc: "puc",
-    show_aitp: "aitp",
-    show_end: "end",
-    show_map: "generic",
-    show_otp_input: "generic",
-    show_verification_result: "generic",
-    show_ev_charging: "ev_charging",
-    none: "generic",
-};

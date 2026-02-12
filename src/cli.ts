@@ -1,14 +1,16 @@
 import { connectRedis, disconnectRedis, seedDefaults, getSession, saveSession, newSession } from "./store";
 import { resolve, BASE_TOOLS } from "./agent";
 import { loadAudioConfig } from "./services/audio-config";
+import { registerBuiltins } from "./builtins";
 import * as readline from "readline";
 
 const SESSION_ID = process.env.SESSION_ID ?? "testUserAjay";
 
 async function main() {
     await connectRedis(process.env.REDIS_URL ?? "redis://localhost:6379");
-    await seedDefaults();
+    registerBuiltins();
     loadAudioConfig();
+    await seedDefaults();
 
     let session = await getSession(SESSION_ID);
     if (session) {

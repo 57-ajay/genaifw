@@ -2,6 +2,7 @@ import { connectRedis, seedDefaults } from "./store";
 import { handleChat } from "./handlers/chat";
 import { resolveAudio, streamAudioRaw, AUDIO_CONFIG } from "./audio";
 import { loadAudioConfig } from "./services/audio-config";
+import { registerBuiltins } from "./builtins";
 import type { AssistantRequest } from "./types";
 
 const PORT = parseInt(process.env.HTTP_TEST_PORT ?? "3001", 10);
@@ -95,8 +96,9 @@ async function handleQueryWithAudio(req: Request): Promise<Response> {
 
 async function main() {
     await connectRedis(process.env.REDIS_URL ?? "redis://localhost:6379");
-    await seedDefaults();
+    registerBuiltins();
     loadAudioConfig();
+    await seedDefaults();
 
     Bun.serve({
         port: PORT,

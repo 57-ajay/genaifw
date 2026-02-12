@@ -5,7 +5,7 @@ import type {
     UIActionType,
     Session,
 } from "../types";
-import { ACTION_TO_INTENT } from "../types";
+import { getIntentForAction, getFeatureFromRegistry } from "../registry";
 import { getSession, newSession } from "../store";
 import { resolve, BASE_TOOLS } from "../agent";
 import {
@@ -17,6 +17,8 @@ import {
     getAudioUrl,
     getAudioUrlDirect,
 } from "../services";
+
+// ─── Helpers ───
 
 function empty(v: unknown): boolean {
     return !v || (typeof v === "string" && !v.trim());
@@ -46,6 +48,58 @@ export interface HandleResult {
     response: AssistantResponse;
     session: Session | null;
 }
+
+// ─── Post-Processor Hooks ───
+
+type PostProcessorFn = (ctx: PostProcessorContext) => Promise<PostProcessorResult>;
+
+interface PostProcessorContext {
+    sessionId: string;
+    actionData: Record<string, unknown>;
+    audioOpts: { interactionCount?: number; isHome?: boolean; requestCount?: number };
+    request: AssistantRequest;
+}
+
+interface PostProcessorResult {
+    earlyReturn?: AssistantResponse;
+    data?: Record<string, unknown> | null;
+    query?: Record<string, unknown> | null;
+    counts?: Record<string, number> | null;
+    audioUrl?: string | null;
+    overrideIntent?: string;
+    overrideAction?: string;
+    ratingKey?: string | null;
+}
+
+const postProcessors = new Map<string, PostProcessorFn>();
+
+// Register built-in post-processors
+postProcessors.set("duties", async (ctx) => {
+    return handleDuties(ctx.sessionId, ctx.actionData, ctx.audioOpts);
+});
+
+postProcessors.set("fraud", async (ctx) => {
+    if (!ctx.request.phoneNo) return {};
+    const fraudResult = await checkDriverRating(ctx.request.phoneNo);
+    if (fraudResult.ratingKey && fraudResult.data) {
+        return {
+            overrideIntent: "fraud_check_found",
+            overrideAction: "show_fraud_result",
+            data: fraudResult.data,
+            ratingKey: fraudResult.ratingKey,
+        };
+    }
+    return {};
+});
+
+/**
+ * Register a custom post-processor (for future extensibility).
+ */
+export function registerPostProcessor(name: string, fn: PostProcessorFn): void {
+    postProcessors.set(name, fn);
+}
+
+// ─── Main Handler ───
 
 export async function handleChat(
     req: AssistantRequest,
@@ -105,9 +159,11 @@ export async function handleChat(
     const agentResult = await resolve(session, onTextChunk);
     const actionType = agentResult.action.type;
     const actionData = agentResult.action.data;
-    const intent: IntentType = ACTION_TO_INTENT[actionType] ?? "generic";
 
-    // --- Post-processing based on intent ---
+    // Resolve intent from registry (dynamic mapping)
+    const intent: IntentType = getIntentForAction(actionType);
+
+    // --- Post-processing ---
     let data: Record<string, unknown> | null = Object.keys(actionData).length ? actionData : null;
     let finalIntent = intent;
     let finalAction: UIActionType = actionType;
@@ -116,27 +172,32 @@ export async function handleChat(
     let counts: Record<string, number> | null = null;
     let ratingKey: string | null = null;
 
-    if (intent === "get_duties") {
-        const result = await handleDuties(
-            sessionId,
-            actionData,
-            audioOpts,
-            // req.driverProfile?.id,
-        );
-        if (result.earlyReturn) {
-            return { response: result.earlyReturn, session };
-        }
-        data = result.data;
-        query = result.query;
-        counts = result.counts;
-        audioUrl = result.audioUrl;
-    } else if (intent === "fraud" && req.phoneNo) {
-        const fraudResult = await checkDriverRating(req.phoneNo);
-        if (fraudResult.ratingKey && fraudResult.data) {
-            finalIntent = "fraud_check_found";
-            finalAction = "show_fraud_result";
-            data = fraudResult.data;
-            ratingKey = fraudResult.ratingKey;
+    // Find post-processor from active feature
+    const activeFeature = session.activeFeature
+        ? getFeatureFromRegistry(session.activeFeature)
+        : null;
+
+    if (activeFeature?.postProcessor) {
+        const processor = postProcessors.get(activeFeature.postProcessor);
+        if (processor) {
+            const result = await processor({
+                sessionId,
+                actionData,
+                audioOpts,
+                request: req,
+            });
+
+            if (result.earlyReturn) {
+                return { response: result.earlyReturn, session };
+            }
+
+            if (result.data !== undefined) data = result.data;
+            if (result.query) query = result.query;
+            if (result.counts) counts = result.counts;
+            if (result.audioUrl) audioUrl = result.audioUrl;
+            if (result.overrideIntent) finalIntent = result.overrideIntent;
+            if (result.overrideAction) finalAction = result.overrideAction;
+            if (result.ratingKey) ratingKey = result.ratingKey;
         }
     }
 
@@ -152,7 +213,6 @@ export async function handleChat(
 
     // --- Analytics (fire-and-forget) ---
     if (req.driverProfile?.id) {
-        // const params = (data as Record<string, unknown>) ?? {};
         logIntent({
             driverId: req.driverProfile.id,
             queryText: text,
@@ -176,18 +236,13 @@ export async function handleChat(
     };
 }
 
+// ─── Duties Post-Processor ───
+
 async function handleDuties(
     sessionId: string,
     actionData: Record<string, unknown>,
     audioOpts: { interactionCount?: number; isHome?: boolean; requestCount?: number },
-    // driverId?: string,
-): Promise<{
-    earlyReturn?: AssistantResponse;
-    data: Record<string, unknown> | null;
-    query: Record<string, unknown> | null;
-    counts: Record<string, number> | null;
-    audioUrl: string | null;
-}> {
+): Promise<PostProcessorResult> {
     const pickupCity = (actionData["from_city"] as string) ?? "";
     const dropCity = (actionData["to_city"] as string) ?? "";
     const pickupEmpty = empty(pickupCity);
@@ -199,10 +254,6 @@ async function handleDuties(
             earlyReturn: makeResponse(sessionId, "entry", "entry", {
                 audio_url: getAudioUrl("entry", audioOpts),
             }),
-            data: null,
-            query: null,
-            counts: null,
-            audioUrl: null,
         };
     }
 
@@ -217,7 +268,6 @@ async function handleDuties(
                 earlyReturn: makeResponse(sessionId, "end", "show_end", {
                     audio_url: getAudioUrlDirect("india_only"),
                 }),
-                data: null, query: null, counts: null, audioUrl: null,
             };
         }
         if (v.coordinates) { pickupCoords = v.coordinates; usedGeo = true; }
@@ -230,7 +280,6 @@ async function handleDuties(
                 earlyReturn: makeResponse(sessionId, "end", "show_end", {
                     audio_url: getAudioUrlDirect("india_only"),
                 }),
-                data: null, query: null, counts: null, audioUrl: null,
             };
         }
     }
@@ -251,7 +300,6 @@ async function handleDuties(
                 data: { query: { pickup_city: pickupCity, drop_city: dropCity } },
                 audio_url: getAudioUrlDirect("no_duty"),
             }),
-            data: null, query: null, counts: null, audioUrl: null,
         };
     }
 
