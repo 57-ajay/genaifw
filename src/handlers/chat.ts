@@ -59,7 +59,7 @@ export async function handleChat(
     const requestCount = req.requestCount;
     const audioOpts = { interactionCount, isHome, requestCount };
 
-    // --- Chip clicks (no AI needed) ---
+    // --- Chip clicks ---
     if (req.chipClick === "find") {
         return {
             response: makeResponse(sessionId, "generic", "none", {
@@ -121,7 +121,7 @@ export async function handleChat(
             sessionId,
             actionData,
             audioOpts,
-            req.driverProfile?.id,
+            // req.driverProfile?.id,
         );
         if (result.earlyReturn) {
             return { response: result.earlyReturn, session };
@@ -152,7 +152,7 @@ export async function handleChat(
 
     // --- Analytics (fire-and-forget) ---
     if (req.driverProfile?.id) {
-        const params = (data as Record<string, unknown>) ?? {};
+        // const params = (data as Record<string, unknown>) ?? {};
         logIntent({
             driverId: req.driverProfile.id,
             queryText: text,
@@ -180,7 +180,7 @@ async function handleDuties(
     sessionId: string,
     actionData: Record<string, unknown>,
     audioOpts: { interactionCount?: number; isHome?: boolean; requestCount?: number },
-    driverId?: string,
+    // driverId?: string,
 ): Promise<{
     earlyReturn?: AssistantResponse;
     data: Record<string, unknown> | null;

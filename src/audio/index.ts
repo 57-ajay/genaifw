@@ -8,7 +8,12 @@ import { uploadAudio } from "./firebase";
 
 export { preloadAll, cacheStats } from "./cache";
 export { AUDIO_CONFIG } from "./config";
+export { createStreamingWavHeader } from "./tts";
 
+/**
+ * Resolve audio for a given action type.
+ * Returns a complete WAV buffer (with header).
+ */
 export async function resolveAudio(actionType: UIActionType, responseText: string): Promise<Buffer> {
     if (AUDIO_CONFIG.forceTTS) return synthesize(responseText);
 
@@ -23,7 +28,9 @@ export async function resolveAudio(actionType: UIActionType, responseText: strin
 
     const audioBuf = await synthesize(responseText);
     if (actionType !== "none") {
-        persistGenerated(actionType, audioBuf).catch((e) => console.error(`Audio persist failed for ${actionType}:`, (e as Error).message));
+        persistGenerated(actionType, audioBuf).catch((e) =>
+            console.error(`Audio persist failed for ${actionType}:`, (e as Error).message),
+        );
     }
     return audioBuf;
 }
@@ -35,7 +42,17 @@ async function persistGenerated(actionType: string, buf: Buffer): Promise<void> 
     console.log(`Audio persisted for ${actionType}`);
 }
 
-// --- WebSocket streaming ---
+/**
+ * Stream audio as raw binary chunks.
+ * Yields WAV header first, then PCM data in chunks.
+ */
+export function* streamAudioRaw(audio: Buffer): Generator<Buffer> {
+    const { chunkSize } = AUDIO_CONFIG;
+    for (let i = 0; i < audio.length; i += chunkSize) {
+        yield audio.subarray(i, i + chunkSize);
+    }
+}
+
 export function streamAudio(ws: WebSocket, audio: Buffer): void {
     if (ws.readyState !== ws.OPEN) return;
     ws.send(JSON.stringify({ type: "audio_start", contentType: "audio/wav", size: audio.length }));
@@ -47,7 +64,6 @@ export function streamAudio(ws: WebSocket, audio: Buffer): void {
     ws.send(JSON.stringify({ type: "audio_end" }));
 }
 
-// --- HTTP SSE streaming ---
 export function streamAudioSSE(controller: ReadableStreamDefaultController<Uint8Array>, audio: Buffer): void {
     const encoder = new TextEncoder();
     const { chunkSize } = AUDIO_CONFIG;

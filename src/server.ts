@@ -6,7 +6,7 @@ import {
 } from "./store";
 import { hasDeclaration } from "./tools";
 import { handleChat } from "./handlers/chat";
-import { resolveAudio, streamAudioSSE, AUDIO_CONFIG } from "./audio";
+import { resolveAudio, streamAudioRaw, AUDIO_CONFIG } from "./audio";
 import { loadAudioConfig } from "./services/audio-config";
 import type { KBEntry, FeatureDetail, APIResponse, AssistantRequest, AssistantResponse } from "./types";
 
@@ -21,16 +21,13 @@ function err(error: string, status = 400): Response { return json<APIResponse>({
 
 async function readBody<T>(req: Request): Promise<T> {
     const req_d = await req.json() as T;
-    // console.dir(req_d, { depth: null });
     return req_d;
 }
 function extractId(path: string, prefix: string): string { return path.slice(prefix.length); }
 
-/** Maps incoming snake_case HTTP fields to internal camelCase. Accepts both formats for compat. */
 function normalizeRequest(raw: Record<string, unknown>): AssistantRequest {
-    // console.log("normalizing");
     return {
-        sessionId: "69ajay69"/*(raw.session_id ?? raw.sessionId ?? "") as string*/,
+        sessionId: "1234qwer4321"/*(raw.session_id ?? raw.sessionId ?? "") as string*/,
         message: (raw.message ?? "") as string,
         text: (raw.text) as string | undefined,
         driverProfile: (raw.driver_profile ?? raw.driverProfile) as AssistantRequest["driverProfile"],
@@ -51,7 +48,6 @@ async function handleRequest(req: Request): Promise<Response> {
     const method = req.method;
 
     try {
-        // --- Chat endpoints ---
         if (path === "/chat" && method === "POST") {
             const raw = await readBody<Record<string, unknown>>(req);
             const body = normalizeRequest(raw);
@@ -64,34 +60,44 @@ async function handleRequest(req: Request): Promise<Response> {
 
         if (path === "/query-with-audio" && method === "POST") {
             const raw = await readBody<Record<string, unknown>>(req);
-
-
-
             const body = normalizeRequest(raw);
-            console.dir(body, { depth: null });
+            // console.dir(body, { depth: null });
             if (!body.sessionId) return err("Need 'session_id'");
 
-
             const { response } = await handleChat(body);
-            console.dir(response, { depth: null });
-            const shouldStream = body.audio !== false && AUDIO_CONFIG.enabled && !response.audio_url;
+            // console.dir(response, { depth: null });
 
-            if (!shouldStream) {
-                return json(response);
+            const shouldStreamAudio = body.audio !== false
+                && AUDIO_CONFIG.enabled
+                && !response.audio_url
+                && response.response_text;
+
+            if (!shouldStreamAudio) {
+                const jsonBytes = new TextEncoder().encode(JSON.stringify(response) + "\n");
+                return new Response(jsonBytes, {
+                    headers: {
+                        "Content-Type": "application/octet-stream",
+                        "Transfer-Encoding": "chunked",
+                        "X-Content-Type": "application/json+audio/wav",
+                        "X-Intent": response.intent,
+                    },
+                });
             }
 
-
-            // SSE: stream JSON response first, then audio chunks
             const stream = new ReadableStream<Uint8Array>({
                 async start(controller) {
-                    const encoder = new TextEncoder();
                     try {
-                        controller.enqueue(encoder.encode(`event: response\ndata: ${JSON.stringify(response)}\n\n`));
+                        const jsonLine = JSON.stringify(response) + "\n";
+                        controller.enqueue(new TextEncoder().encode(jsonLine));
 
                         const audioBuf = await resolveAudio(response.ui_action, response.response_text);
-                        streamAudioSSE(controller, audioBuf);
+                        for (const chunk of streamAudioRaw(audioBuf)) {
+                            controller.enqueue(new Uint8Array(chunk));
+                        }
                     } catch (e: unknown) {
-                        controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: (e as Error).message })}\n\n`));
+                        const errorMarker = `ERROR:${((e as Error).message ?? "unknown").slice(0, 100)}`;
+                        controller.enqueue(new TextEncoder().encode(errorMarker));
+                        console.error("TTS streaming failed:", (e as Error).message);
                     }
                     controller.close();
                 },
@@ -99,9 +105,10 @@ async function handleRequest(req: Request): Promise<Response> {
 
             return new Response(stream, {
                 headers: {
-                    "Content-Type": "text/event-stream",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Content-Type": "application/octet-stream",
+                    "Transfer-Encoding": "chunked",
+                    "X-Content-Type": "application/json+audio/wav",
+                    "X-Intent": response.intent,
                 },
             });
         }
@@ -207,8 +214,8 @@ export async function startServer() {
     console.log(`✓ API server on http://localhost:${PORT}`);
     console.log(`
   Chat:
-    POST /chat             → AssistantResponse JSON
-    POST /query-with-audio  → SSE stream (response + audio chunks)
+    POST /chat              → AssistantResponse JSON
+    POST /query-with-audio  → Chunked binary (JSON\\n + WAV audio)
 
   KB:       GET|POST|DELETE /kb    GET|PUT|DELETE /kb/:id
   Features: GET|POST|DELETE /features  GET|PUT|DELETE /features/:name
