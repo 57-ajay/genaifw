@@ -19,15 +19,10 @@ export async function fetchBuffer(url: string): Promise<Buffer> {
 export async function preloadAll(): Promise<void> {
     const mapped = getAllMappedUrls();
     const entries = Array.from(mapped.entries());
-
     console.log(`Preloading ${entries.length} audio files...`);
 
     const results = await Promise.allSettled(
-        entries.map(async ([key, url]) => {
-            const buf = await fetchBuffer(url);
-            store.set(key, buf);
-            return key;
-        }),
+        entries.map(async ([key, url]) => { store.set(key, await fetchBuffer(url)); return key; }),
     );
 
     const ok = results.filter((r) => r.status === "fulfilled").length;

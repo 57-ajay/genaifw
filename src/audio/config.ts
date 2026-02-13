@@ -1,4 +1,3 @@
-console.log(process.env.AUDIO_ENABLED);
 export const AUDIO_CONFIG = {
     enabled: process.env.AUDIO_ENABLED !== "false",
     forceTTS: process.env.FORCE_TTS === "true",
@@ -11,6 +10,6 @@ export const AUDIO_CONFIG = {
         ssmlGender: process.env.TTS_GENDER ?? "FEMALE",
         encoding: "LINEAR16" as const,
         sampleRateHertz: parseInt(process.env.TTS_SAMPLE_RATE ?? "24000"),
-        model: process.env.MODEL_NAME ?? "gemini-2.5-flash-lite-preview-tts"
+        model: process.env.MODEL_NAME ?? "gemini-2.5-flash-lite-preview-tts",
     },
 };

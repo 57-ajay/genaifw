@@ -1,9 +1,7 @@
 import { GoogleAuth } from "google-auth-library";
 import { AUDIO_CONFIG } from "./config";
 
-const auth = new GoogleAuth({
-    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-});
+const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
 
 async function getAccessToken(): Promise<string> {
     const client = await auth.getClient();
@@ -19,22 +17,10 @@ export async function uploadAudio(name: string, buf: Buffer): Promise<string> {
 
     const res = await fetch(
         `https://firebasestorage.googleapis.com/upload/storage/v1/b/${firebaseBucket}/o?uploadType=media&name=${firebasePath}/${name}.wav`,
-        {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "audio/wav",
-            },
-            body: buf,
-        },
+        { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "audio/wav" }, body: buf },
     );
 
-    if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`Firebase upload failed (${res.status}): ${body}`);
-    }
-
+    if (!res.ok) throw new Error(`Firebase upload failed (${res.status}): ${await res.text()}`);
     const data = (await res.json()) as { downloadTokens?: string };
-    const token_ = data.downloadTokens ?? "";
-    return `https://firebasestorage.googleapis.com/v0/b/${firebaseBucket}/o/${objectPath}?alt=media&token=${token_}`;
+    return `https://firebasestorage.googleapis.com/v0/b/${firebaseBucket}/o/${objectPath}?alt=media&token=${data.downloadTokens ?? ""}`;
 }

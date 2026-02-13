@@ -14,7 +14,4 @@ async function main() {
     startWS(WS_PORT);
 }
 
-main().catch((e) => {
-    console.error("Fatal:", e);
-    process.exit(1);
-});
+main().catch((e) => { console.error("Fatal:", e); process.exit(1); });
