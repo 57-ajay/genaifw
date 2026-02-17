@@ -34,7 +34,10 @@ const frameworkDeclarations: Record<string, ToolDeclaration> = {
         name: "playPredefineAudioInApp",
         description: "Get full instructions and tools for a feature. Call with featureName from KB results.",
         parameters: {
-            audioName: { type: Type.STRING, description: "play a predefined audio in the app" },
+            type: Type.OBJECT,
+            properties: {
+                audioName: { type: Type.STRING, description: "play a predefined audio in the app" },
+            },
             required: ["audioName"],
         },
     },
@@ -42,7 +45,10 @@ const frameworkDeclarations: Record<string, ToolDeclaration> = {
         name: "playCustomAudioInApp",
         description: "Get full instructions and tools for a feature. Call with featureName from KB results.",
         parameters: {
-            audioText: { type: Type.STRING, description: "play a custom audio from text in the app" },
+            type: Type.OBJECT,
+            properties: {
+                audioText: { type: Type.STRING, description: "play a custom audio from text in the app" },
+            },
             required: ["audioText"],
         },
     },
@@ -50,8 +56,11 @@ const frameworkDeclarations: Record<string, ToolDeclaration> = {
         name: "changeScreenInApp",
         description: "to change screen in app with optional predefined data",
         parameters: {
-            screenName: { type: Type.STRING, description: "name of the screen where to want to redirect in app" },
-            predefindData: { type: Type.OBJECT, description: "user's provided data that is mention in instruction" },
+            type: Type.OBJECT,
+            properties: {
+                screenName: { type: Type.STRING, description: "name of the screen where to want to redirect in app" },
+                predefindData: { type: Type.OBJECT, description: "user's provided data that is mention in instruction" },
+            },
             required: ["screenName"],
         },
     },
@@ -59,8 +68,11 @@ const frameworkDeclarations: Record<string, ToolDeclaration> = {
         name: "uiActionInApp",
         description: "to patch a ui action in app with optional predefined data",
         parameters: {
-            uiAction: { type: Type.STRING, description: "action that we want to patch inside " },
-            predefindData: { type: Type.OBJECT, description: "user's provided data that is mention in instruction" },
+            type: Type.OBJECT,
+            properties: {
+                uiAction: { type: Type.STRING, description: "action that we want to patch inside " },
+                predefindData: { type: Type.OBJECT, description: "user's provided data that is mention in instruction" },
+            },
             required: ["uiAction"],
         },
     },
@@ -81,7 +93,7 @@ function formatKBResults(entries: KBEntry[]): string {
 
 const frameworkImplementations: Record<string, ToolFn> = {
     fetchKnowledgeBase: async (args, session) => {
-        const results = await searchKnowledgeBase(args["query"] ?? "");
+        const results = await searchKnowledgeBase(args["query"] as string ?? "");
         const feat = results.find((r) => r.type === "feature") as Extract<KBEntry, { type: "feature" }> | undefined;
         if (feat && feat.featureName !== session.activeFeature) {
             session.activeFeature = null;
@@ -91,7 +103,7 @@ const frameworkImplementations: Record<string, ToolFn> = {
     },
     fetchFeaturePrompt: async (args, session) => {
         const name = args["featureName"] ?? "";
-        const detail = await getFeatureDetail(name);
+        const detail = await getFeatureDetail(name as string);
         if (!detail) return { msg: `Feature "${name}" not found.` };
 
         // Set matched action with ALL possible actions for this feature
@@ -103,36 +115,36 @@ const frameworkImplementations: Record<string, ToolFn> = {
         return {
             msg: detail.prompt,
             addTools: detail.tools.map((t) => t.name),
-            featureName: name,
+            featureName: name as string,
         };
     },
     playPredefineAudioInApp: async (args, session) => {
       
         return {
-            audioName: args.audioName,
+            audioName: args.audioName as string,
             msg: 'predefined audio is playing in app',
         };
     },
     playCustomAudioInApp: async (args, session) => {
       
         return {
-            audioText: args.audioText,
+            audioText: args.audioText as string,
             msg: 'custom audio is playing in app',
         };
     },
     changeScreenInApp: async (args, session) => {
 
         return {
-            screenName: args.screenName,
-            predefindData: args.predefindData,
+            screenName: args.screenName as string,
+            predefindData: args.predefindData as Record<string, unknown>,
             msg: 'changed app screen to '+ args.screenName,
         };
     },
     uiActionInApp: async (args, session) => {
 
         return {
-            uiAction: args.uiAction,
-            predefindData: args.predefindData,
+            uiAction: args.uiAction as string,
+            predefindData: args.predefindData as Record<string, unknown>,
             msg: args.uiAction + ' is happened in app',
         };
     },
@@ -168,7 +180,7 @@ export function getTool(name: string): ToolFn | undefined {
     // Dynamic tool from registry?
     const config = getToolConfig(name);
     if (config) {
-        return (args: Record<string, string>, session: Session): Promise<ToolResult> =>
+        return (args: Record<string, unknown>, session: Session): Promise<ToolResult> =>
             executeDynamicTool(name, args, session);
     }
 

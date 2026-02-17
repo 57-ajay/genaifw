@@ -182,7 +182,7 @@ export interface AgentResponse {
 }
 
 export type ToolFn = (
-    args: Record<string, string>,
+    args: Record<string, unknown>,
     session: Session,
 ) => Promise<ToolResult>;
 
@@ -192,6 +192,7 @@ export interface ToolResult {
     featureName?: string;
     screenName?: string;
     audioName?: string;
+    audioText?: string;
     uiAction?: string;
     predefindData?: Record<string, unknown> | null;
 }

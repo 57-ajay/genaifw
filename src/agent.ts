@@ -107,6 +107,7 @@ async function loop(
     response: AgentResponse,
     onTextChunk?: (chunk: string) => void,
 ): Promise<AgentResponse> {
+    try {
     if (depth >= MAX_DEPTH) {
         response.audioName = ''
         return response
@@ -141,7 +142,7 @@ async function loop(
 
         const fn = getTool(fnCall.name!);
         const args = fnCall.args && typeof fnCall.args === "object"
-            ? (fnCall.args as Record<string, string>)
+            ? (fnCall.args as Record<string, unknown>)
             : {};
 
         const { msg, addTools, featureName, screenName, audioName, uiAction, predefindData } = fn
@@ -173,4 +174,9 @@ async function loop(
     await saveSession(session);
 
     return response
+            
+    } catch (error) {
+        console.error('error in loop', error)
+        throw error
+    }
 }

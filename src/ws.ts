@@ -46,6 +46,7 @@ async function handleMessage(ws: WebSocket, raw: string): Promise<void> {
             }
         }
     } catch (e: unknown) {
+        console.error('error in handleMessage', e)
         send(ws, { type: "error", error: (e as Error).message ?? "Internal error" });
     }
 }

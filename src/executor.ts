@@ -3,7 +3,7 @@ import { getToolConfig } from "./registry";
 
 // ─── Builtin Handlers (for complex logic that can't be config-driven) ───
 
-type BuiltinHandler = (args: Record<string, string>, session: Session) => Promise<ToolResult>;
+type BuiltinHandler = (args: Record<string, unknown>, session: Session) => Promise<ToolResult>;
 
 const builtinHandlers = new Map<string, BuiltinHandler>();
 
@@ -20,17 +20,18 @@ export function hasBuiltin(name: string): boolean {
 /**
  * Replace {{param}} with args values and {{ENV.VAR}} with env vars.
  */
-export function interpolate(template: string, vars: Record<string, string>): string {
+export function interpolate(template: string, vars: Record<string, unknown>): string {
+    let v = vars as Record<string, string>
     return template.replace(/\{\{(ENV\.)?([^}]+)\}\}/g, (_, isEnv: string | undefined, key: string) => {
         if (isEnv) return process.env[key] ?? "";
-        return vars[key] ?? "";
+        return v[key] ?? "";
     });
 }
 
 /**
  * Deep-interpolate an object/array/string.
  */
-function interpolateObj(obj: unknown, vars: Record<string, string>): unknown {
+function interpolateObj(obj: unknown, vars: Record<string, unknown>): unknown {
     if (typeof obj === "string") return interpolate(obj, vars);
     if (Array.isArray(obj)) return obj.map((item) => interpolateObj(item, vars));
     if (obj && typeof obj === "object") {
@@ -55,7 +56,7 @@ function getNestedValue(obj: unknown, path: string): unknown {
 
 // ─── HTTP Tool Executor ───
 
-async function executeHttp(impl: HttpToolImpl, args: Record<string, string>): Promise<string> {
+async function executeHttp(impl: HttpToolImpl, args: Record<string, unknown>): Promise<string> {
     const url = interpolate(impl.url, args);
 
     const headers: Record<string, string> = {};
@@ -110,7 +111,7 @@ async function executeHttp(impl: HttpToolImpl, args: Record<string, string>): Pr
 
 export async function executeDynamicTool(
     name: string,
-    args: Record<string, string>,
+    args: Record<string, unknown>,
     session: Session,
 ): Promise<ToolResult> {
     const config = getToolConfig(name);
@@ -123,7 +124,7 @@ export async function executeDynamicTool(
 
 export async function executeImpl(
     impl: ToolImplementation,
-    args: Record<string, string>,
+    args: Record<string, unknown>,
     session: Session,
 ): Promise<ToolResult> {
     try {
