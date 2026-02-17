@@ -174,11 +174,11 @@ export interface AssistantResponse {
 //  Agent types
 
 export interface AgentResponse {
-    response: string;
-    action: {
-        type: UIActionType;
-        data: Record<string, unknown>;
-    };
+    audioText: string;
+    audioName: string;
+    screenName: string;
+    uiAction: string;
+    predefindData: Record<string, unknown> | null;
 }
 
 export type ToolFn = (
@@ -190,6 +190,10 @@ export interface ToolResult {
     msg: string;
     addTools?: string[];
     featureName?: string;
+    screenName?: string;
+    audioName?: string;
+    uiAction?: string;
+    predefindData?: Record<string, unknown> | null;
 }
 
 //  Session

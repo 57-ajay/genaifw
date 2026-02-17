@@ -30,6 +30,40 @@ const frameworkDeclarations: Record<string, ToolDeclaration> = {
             required: ["featureName"],
         },
     },
+    playPredefineAudioInApp: {
+        name: "playPredefineAudioInApp",
+        description: "Get full instructions and tools for a feature. Call with featureName from KB results.",
+        parameters: {
+            audioName: { type: Type.STRING, description: "play a predefined audio in the app" },
+            required: ["audioName"],
+        },
+    },
+    playCustomAudioInApp: {
+        name: "playCustomAudioInApp",
+        description: "Get full instructions and tools for a feature. Call with featureName from KB results.",
+        parameters: {
+            audioText: { type: Type.STRING, description: "play a custom audio from text in the app" },
+            required: ["audioText"],
+        },
+    },
+    changeScreenInApp: {
+        name: "changeScreenInApp",
+        description: "to change screen in app with optional predefined data",
+        parameters: {
+            screenName: { type: Type.STRING, description: "name of the screen where to want to redirect in app" },
+            predefindData: { type: Type.OBJECT, description: "user's provided data that is mention in instruction" },
+            required: ["screenName"],
+        },
+    },
+    uiActionInApp: {
+        name: "uiActionInApp",
+        description: "to patch a ui action in app with optional predefined data",
+        parameters: {
+            uiAction: { type: Type.STRING, description: "action that we want to patch inside " },
+            predefindData: { type: Type.OBJECT, description: "user's provided data that is mention in instruction" },
+            required: ["uiAction"],
+        },
+    },
 };
 
 // ─── Framework Tool Implementations ───
@@ -70,6 +104,36 @@ const frameworkImplementations: Record<string, ToolFn> = {
             msg: detail.prompt,
             addTools: detail.tools.map((t) => t.name),
             featureName: name,
+        };
+    },
+    playPredefineAudioInApp: async (args, session) => {
+      
+        return {
+            audioName: args.audioName,
+            msg: 'predefined audio is playing in app',
+        };
+    },
+    playCustomAudioInApp: async (args, session) => {
+      
+        return {
+            audioText: args.audioText,
+            msg: 'custom audio is playing in app',
+        };
+    },
+    changeScreenInApp: async (args, session) => {
+
+        return {
+            screenName: args.screenName,
+            predefindData: args.predefindData,
+            msg: 'changed app screen to '+ args.screenName,
+        };
+    },
+    uiActionInApp: async (args, session) => {
+
+        return {
+            uiAction: args.uiAction,
+            predefindData: args.predefindData,
+            msg: args.uiAction + ' is happened in app',
         };
     },
 };

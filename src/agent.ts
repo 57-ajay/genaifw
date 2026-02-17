@@ -84,26 +84,32 @@ function buildSystemPrompt(session: Session): string {
     return `${SYSTEM_PROMPT}\n\n## Current Context\n${parts.join("\n")}`;
 }
 
-export const BASE_TOOLS = ["fetchKnowledgeBase", "fetchFeaturePrompt"];
+export const BASE_TOOLS = ["fetchKnowledgeBase", "fetchFeaturePrompt", "playPredefineAudioInApp", "playCustomAudioInApp", "changeScreenInApp", "uiActionInApp"];
 const MAX_DEPTH = 15;
 
 export async function resolve(
     session: Session,
     onTextChunk?: (chunk: string) => void,
 ): Promise<AgentResponse> {
-    return loop(session, 0, onTextChunk);
+    const response: AgentResponse = {
+        audioText: '',
+        audioName: '',
+        screenName: '',
+        uiAction: '',
+        predefindData: null
+    }
+    return loop(session, 0, response, onTextChunk);
 }
 
 async function loop(
     session: Session,
     depth: number,
+    response: AgentResponse,
     onTextChunk?: (chunk: string) => void,
 ): Promise<AgentResponse> {
     if (depth >= MAX_DEPTH) {
-        return {
-            response: "Bahut zyada steps ho gaye. Kya aap dobara bata sakte hain?",
-            action: { type: "none", data: {} },
-        };
+        response.audioName = ''
+        return response
     }
 
     const respondDecl = buildRespondTool(session.matchedAction);
@@ -119,7 +125,7 @@ async function loop(
         },
     });
 
-    let text = "";
+    let text = "limitReachedAudio";
     let fnCall: FunctionCall | null = null;
 
     for await (const chunk of stream) {
@@ -130,23 +136,6 @@ async function loop(
         }
     }
 
-    if (fnCall?.name === RESPOND_TOOL_NAME) {
-        const args = (fnCall.args ?? {}) as Record<string, unknown>;
-        const responseText = (args.response as string) ?? text ?? "Kuch samajh nahi aaya.";
-
-        session.history.push({ role: "model", parts: [{ text: responseText }] });
-        session.matchedAction = null;
-        await saveSession(session);
-
-        return {
-            response: responseText,
-            action: {
-                type: (args.action_type as UIActionType) ?? "none",
-                data: (args.action_data as Record<string, unknown>) ?? {},
-            },
-        };
-    }
-
     if (fnCall) {
         session.history.push({ role: "model", parts: [{ functionCall: fnCall } as Part] });
 
@@ -155,11 +144,15 @@ async function loop(
             ? (fnCall.args as Record<string, string>)
             : {};
 
-        const { msg, addTools, featureName } = fn
+        const { msg, addTools, featureName, screenName, audioName, uiAction, predefindData } = fn
             ? await fn(args, session)
             : { msg: `Error: tool "${fnCall.name}" not found.` };
 
         if (featureName) session.activeFeature = featureName;
+        if (screenName) response.screenName = screenName;
+        if (audioName) response.audioName = audioName;
+        if (uiAction) response.uiAction = uiAction;
+        if (predefindData) response.predefindData = { ...response.predefindData, ...predefindData } ;
         if (addTools) {
             for (const t of addTools) {
                 if (!session.activeTools.includes(t)) session.activeTools.push(t);
@@ -172,15 +165,12 @@ async function loop(
         });
 
         await saveSession(session);
-        return loop(session, depth + 1, onTextChunk);
+        return loop(session, depth + 1, response, onTextChunk);
     }
 
     session.history.push({ role: "model", parts: [{ text }] });
     session.matchedAction = null;
     await saveSession(session);
 
-    return {
-        response: text || "Kuch samajh nahi aaya, kya aap dobara bata sakte hain?",
-        action: { type: "none", data: {} },
-    };
+    return response
 }
