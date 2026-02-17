@@ -51,12 +51,18 @@ export interface HandleResult {
 
 // ─── Post-Processor Hooks ───
 
-type PostProcessorFn = (ctx: PostProcessorContext) => Promise<PostProcessorResult>;
+type PostProcessorFn = (
+    ctx: PostProcessorContext,
+) => Promise<PostProcessorResult>;
 
 interface PostProcessorContext {
     sessionId: string;
     actionData: Record<string, unknown>;
-    audioOpts: { interactionCount?: number; isHome?: boolean; requestCount?: number };
+    audioOpts: {
+        interactionCount?: number;
+        isHome?: boolean;
+        requestCount?: number;
+    };
     request: AssistantRequest;
 }
 
@@ -105,7 +111,6 @@ export async function handleChat(
     req: AssistantRequest,
     onTextChunk?: (chunk: string) => void,
 ): Promise<HandleResult> {
-
     const sessionId = req.sessionId;
     const text = (req.text || req.message || "").trim();
     const interactionCount = req.interactionCount;
@@ -157,14 +162,19 @@ export async function handleChat(
 
     // --- Run agent ---
     const agentResult = await resolve(session, onTextChunk);
-    const actionType = agentResult.action.type;
-    const actionData = agentResult.action.data;
+    const actionType = agentResult.uiAction;
+    const actionData = agentResult.predefindData;
 
     // Resolve intent from registry (dynamic mapping)
     const intent: IntentType = getIntentForAction(actionType);
 
     // --- Post-processing ---
-    let data: Record<string, unknown> | null = Object.keys(actionData).length ? actionData : null;
+    let data: Record<string, unknown>;
+    if (actionData) {
+        data = Object.keys(actionData).length ? actionData : {};
+    } else {
+        data = {};
+    }
     let finalIntent = intent;
     let finalAction: UIActionType = actionType;
     let audioUrl: string | null = null;
@@ -182,7 +192,7 @@ export async function handleChat(
         if (processor) {
             const result = await processor({
                 sessionId,
-                actionData,
+                actionData: data,
                 audioOpts,
                 request: req,
             });
@@ -191,7 +201,7 @@ export async function handleChat(
                 return { response: result.earlyReturn, session };
             }
 
-            if (result.data !== undefined) data = result.data;
+            if (result.data !== undefined) data = result.data!;
             if (result.query) query = result.query;
             if (result.counts) counts = result.counts;
             if (result.audioUrl) audioUrl = result.audioUrl;
@@ -221,12 +231,12 @@ export async function handleChat(
             interactionCount: interactionCount ?? 0,
             pickupCity: (query?.["pickup_city"] as string) ?? undefined,
             dropCity: (query?.["drop_city"] as string) ?? undefined,
-        }).catch(() => { });
+        }).catch(() => {});
     }
 
     return {
         response: makeResponse(sessionId, finalIntent, finalAction, {
-            response_text: agentResult.response,
+            response_text: agentResult.audioText,
             data,
             query,
             counts,
@@ -241,7 +251,11 @@ export async function handleChat(
 async function handleDuties(
     sessionId: string,
     actionData: Record<string, unknown>,
-    audioOpts: { interactionCount?: number; isHome?: boolean; requestCount?: number },
+    audioOpts: {
+        interactionCount?: number;
+        isHome?: boolean;
+        requestCount?: number;
+    },
 ): Promise<PostProcessorResult> {
     const pickupCity = (actionData["from_city"] as string) ?? "";
     const dropCity = (actionData["to_city"] as string) ?? "";
@@ -270,7 +284,10 @@ async function handleDuties(
                 }),
             };
         }
-        if (v.coordinates) { pickupCoords = v.coordinates; usedGeo = true; }
+        if (v.coordinates) {
+            pickupCoords = v.coordinates;
+            usedGeo = true;
+        }
     }
 
     if (!dropEmpty) {
@@ -286,18 +303,32 @@ async function handleDuties(
 
     // Search trips + leads in parallel
     const [trips, leads] = await Promise.all([
-        searchTrips({ pickupCity, dropCity, pickupCoordinates: pickupCoords }).catch(() => [] as Record<string, unknown>[]),
-        searchLeads({ pickupCity, dropCity, pickupCoordinates: pickupCoords }).catch(() => [] as Record<string, unknown>[]),
+        searchTrips({
+            pickupCity,
+            dropCity,
+            pickupCoordinates: pickupCoords,
+        }).catch(() => [] as Record<string, unknown>[]),
+        searchLeads({
+            pickupCity,
+            dropCity,
+            pickupCoordinates: pickupCoords,
+        }).catch(() => [] as Record<string, unknown>[]),
     ]);
 
-    const queryInfo = { pickup_city: pickupCity || null, drop_city: dropCity || null, used_geo: usedGeo };
+    const queryInfo = {
+        pickup_city: pickupCity || null,
+        drop_city: dropCity || null,
+        used_geo: usedGeo,
+    };
     const countsInfo = { trips: trips.length, leads: leads.length };
 
     // No results
     if (trips.length === 0 && leads.length === 0) {
         return {
             earlyReturn: makeResponse(sessionId, "end", "show_end", {
-                data: { query: { pickup_city: pickupCity, drop_city: dropCity } },
+                data: {
+                    query: { pickup_city: pickupCity, drop_city: dropCity },
+                },
                 audio_url: getAudioUrlDirect("no_duty"),
             }),
         };
