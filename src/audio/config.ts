@@ -10,7 +10,7 @@ export const AUDIO_CONFIG = {
         ssmlGender: process.env.TTS_GENDER ?? "FEMALE",
         encoding: "LINEAR16" as const,
         sampleRateHertz: parseInt(process.env.TTS_SAMPLE_RATE ?? "24000"),
-        model: process.env.MODEL_NAME ?? "gemini-2.5-flash-lite-preview-tts",
+        model: process.env.TTS_MODEL ?? "gemini-2.5-flash-lite-preview-tts",
     },
 };
 
