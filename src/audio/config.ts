@@ -13,3 +13,5 @@ export const AUDIO_CONFIG = {
         model: process.env.MODEL_NAME ?? "gemini-2.5-flash-lite-preview-tts",
     },
 };
+
+console.log("[AudioConfig]", JSON.stringify(AUDIO_CONFIG, null, 2));
