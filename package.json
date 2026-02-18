@@ -1,26 +1,26 @@
 {
-  "name": "genaifw",
-  "module": "index.ts",
-  "type": "module",
-  "private": true,
-  "scripts": {
-    "dev": "bun run src/cli.ts",
-    "check": "bun x tsc --noEmit",
-    "serve": "bun run src/serve.ts",
-    "serve:http": "bun run src/http.ts"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@types/ws": "^8.18.1"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
-  "dependencies": {
-    "@google/genai": "^1.40.0",
-    "firebase-admin": "^13.6.1",
-    "google-auth-library": "^10.5.0",
-    "redis": "^5.10.0",
-    "ws": "^8.19.0"
-  }
+    "name": "genaifw",
+    "module": "index.ts",
+    "type": "module",
+    "private": true,
+    "scripts": {
+        "dev": "bun run src/cli.ts",
+        "check": "bun x tsc --noEmit",
+        "serve": "bun run src/serve.ts",
+        "serve:http": "bun run src/http.ts"
+    },
+    "devDependencies": {
+        "@types/bun": "latest",
+        "@types/ws": "^8.18.1"
+    },
+    "peerDependencies": {
+        "typescript": "^5"
+    },
+    "dependencies": {
+        "@google/genai": "^1.40.0",
+        "firebase-admin": "^13.6.1",
+        "google-auth-library": "^10.5.0",
+        "redis": "^5.10.0",
+        "ws": "^8.19.0"
+    }
 }

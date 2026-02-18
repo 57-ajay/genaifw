@@ -1,91 +1,60 @@
-export type UIActionType = string;
-export type IntentType = string;
+// Client -> Server
+export type ClientEventType = "message" | "screenChange" | "submit" | "init";
 
-// Action <-> Intent Mapping
-
-export interface ActionMapping {
-    uiAction: string;
-    intent: string;
-    audioKey?: string; // optional override key for audio URL lookup
+export interface ClientEvent {
+    sessionId: string;
+    type: ClientEventType;
+    text?: string;
+    screen?: string; // current screen (for "screenChange" / "submit")
+    data?: Record<string, unknown>; // form data, screen state, init options
+    context?: ClientContext; // session context (sent on init or when changed)
 }
 
-//  Tool Configuration
-
-export interface ToolDeclaration {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
+export interface ClientContext {
+    driverProfile?: DriverProfile;
+    location?: Location;
+    userData?: UserData;
 }
 
-export interface HttpToolImpl {
-    type: "http";
-    url: string;                              // supports {{param}} and {{ENV.VAR}}
-    method: "GET" | "POST";
-    headers?: Record<string, string>;         // supports {{ENV.VAR}}
-    bodyTemplate?: Record<string, unknown>;   // supports {{param}} placeholders
-    responseMapping?: string;                 // dot-path to extract (e.g. "data.results")
-    responseTemplate?: string;                // template for message back to AI
-    timeout?: number;                         // ms, default 10000
-}
+// Server -> Client
 
-export interface StaticToolImpl {
-    type: "static";
-    response: string;
-}
+export type ServerAction =
+    | { type: "speak"; text: string }
+    | { type: "playAudio"; key: string }
+    | { type: "navigate"; screen: string; data?: Record<string, unknown> }
+    | { type: "uiAction"; action: string; data?: Record<string, unknown> }
+    | { type: "endConversation" };
 
-export interface BuiltinToolImpl {
-    type: "builtin";
-    handler: string; // name of registered handler function
-}
-
-export type ToolImplementation = HttpToolImpl | StaticToolImpl | BuiltinToolImpl;
-
-export interface ToolConfig {
-    name: string;
-    declaration: {
-        description: string;
-        parameters: Record<string, unknown>;
+export interface ServerMessage {
+    sessionId: string;
+    actions: ServerAction[];
+    metadata?: {
+        intent?: string;
+        feature?: string;
     };
-    implementation: ToolImplementation;
 }
 
-// Feature Detail
+// WebSocket Wire Messages
 
-export interface FeatureDetail {
-    featureName: string;
-    desc: string;
-    prompt: string;
+export type WSClientMessage = ClientEvent;
 
-    actions: ActionMapping[];
-    defaultAction: string;
+export type WSServerMessage =
+    | { type: "actions"; message: ServerMessage }
+    | { type: "audio_start"; contentType: string; size: number }
+    | { type: "audio_end" }
+    | { type: "error"; error: string };
 
-    audioMappings?: Record<string, string | null>;
-
-    tools: ToolConfig[];
-
-    dataSchema: Record<string, unknown>;
-
-    // Optional post-processor hook name (e.g. "duties", "fraud")
-    postProcessor?: string;
-}
-
-// Knowledge Base
-
-export type KBEntry =
-    | { type: "info"; desc: string }
-    | { type: "feature"; desc: string; featureName: string; tools: string[] };
-
-// Matched Action (for respondToUser constraint)
-
-export interface MatchedAction {
-    actions: string[];                   // all possible UI actions for matched feature
-    dataSchema: Record<string, unknown>;
-}
-
-//Request types
+//  Domain Types
 export interface Location {
     latitude: number;
     longitude: number;
+}
+
+export interface UserData {
+    name?: string;
+    phoneNo?: string;
+    date?: string;
+    [key: string]: string | undefined;
 }
 
 export interface DriverProfile {
@@ -133,77 +102,11 @@ export interface DriverProfile {
     [key: string]: unknown;
 }
 
-export interface UserData {
-    name?: string;
-    phoneNo?: string;
-    date?: string;
-    [key: string]: string | undefined;
-}
-
-export interface AssistantRequest {
-    sessionId: string;
-    message: string;
-    text?: string;
-    driverProfile?: DriverProfile;
-    currentLocation?: Location;
-    userData?: UserData | null;
-    audio?: boolean;
-    interactionCount?: number;
-    isHome?: boolean;
-    requestCount?: number;
-    chipClick?: string;
-    phoneNo?: string;
-}
-
-// Response types
-
-export interface AssistantResponse {
-    session_id: string;
-    success: boolean;
-    intent: IntentType;
-    ui_action: UIActionType;
-    response_text: string;
-    query?: Record<string, unknown> | null;
-    counts?: Record<string, number> | null;
-    data: Record<string, unknown> | null;
-    audio_cached?: boolean;
-    cache_key?: string;
-    audio_url?: string | null;
-}
-
-//  Agent types
-
-export interface AgentResponse {
-    audioText: string;
-    audioName: string;
-    screenName: string;
-    uiAction: string;
-    predefindData: Record<string, unknown> | null;
-}
-
-export type ToolFn = (
-    args: Record<string, unknown>,
-    session: Session,
-) => Promise<ToolResult>;
-
-export interface ToolResult {
-    msg: string;
-    addTools?: string[];
-    featureName?: string;
-    screenName?: string;
-    audioName?: string;
-    audioText?: string;
-    uiAction?: string;
-    predefindData?: Record<string, unknown> | null;
-}
-
 //  Session
-
 export interface Session {
     id: string;
     history: ChatMessage[];
     activeTools: string[];
-    matchedAction: MatchedAction | null;
     activeFeature: string | null;
     userData: UserData | null;
     driverProfile: DriverProfile | null;
@@ -222,8 +125,88 @@ export type Part =
     | { functionCall: { name: string; args: Record<string, string> } }
     | { functionResponse: { name: string; response: { content: string } } };
 
-//  API
+//  Knowledge Base
+export type KBEntry =
+    | { type: "info"; desc: string }
+    | { type: "feature"; desc: string; featureName: string; tools: string[] };
 
+//  Tool System
+export interface ToolDeclaration {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+}
+
+export interface HttpToolImpl {
+    type: "http";
+    url: string;
+    method: "GET" | "POST";
+    headers?: Record<string, string>;
+    bodyTemplate?: Record<string, unknown>;
+    responseMapping?: string;
+    responseTemplate?: string;
+    timeout?: number;
+}
+
+export interface StaticToolImpl {
+    type: "static";
+    response: string;
+}
+
+export interface BuiltinToolImpl {
+    type: "builtin";
+    handler: string;
+}
+
+export type ToolImplementation =
+    | HttpToolImpl
+    | StaticToolImpl
+    | BuiltinToolImpl;
+
+export interface ToolConfig {
+    name: string;
+    declaration: {
+        description: string;
+        parameters: Record<string, unknown>;
+    };
+    implementation: ToolImplementation;
+}
+
+// Tool Execution
+
+export type ToolFn = (
+    args: Record<string, unknown>,
+    session: Session,
+) => Promise<ToolResult>;
+
+export interface ToolResult {
+    msg: string;
+    addTools?: string[];
+    featureName?: string;
+    actions?: ServerAction[];
+}
+
+//  Feature Configuration
+
+export interface ActionMapping {
+    uiAction: string;
+    intent: string;
+    audioKey?: string;
+}
+
+export interface FeatureDetail {
+    featureName: string;
+    desc: string;
+    prompt: string;
+    actions: ActionMapping[];
+    defaultAction: string;
+    audioMappings?: Record<string, string | null>;
+    tools: ToolConfig[];
+    dataSchema: Record<string, unknown>;
+    postProcessor?: string;
+}
+
+//  API (admin endpoints)
 export interface APIResponse<T = unknown> {
     ok: boolean;
     data?: T;

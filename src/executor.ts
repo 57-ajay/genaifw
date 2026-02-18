@@ -1,9 +1,17 @@
-import type { ToolImplementation, HttpToolImpl, Session, ToolResult } from "./types";
+import type {
+    ToolImplementation,
+    HttpToolImpl,
+    Session,
+    ToolResult,
+} from "./types";
 import { getToolConfig } from "./registry";
 
-// ─── Builtin Handlers (for complex logic that can't be config-driven) ───
+// Builtin Handlers (for complex logic that can't be config-driven)
 
-type BuiltinHandler = (args: Record<string, unknown>, session: Session) => Promise<ToolResult>;
+type BuiltinHandler = (
+    args: Record<string, unknown>,
+    session: Session,
+) => Promise<ToolResult>;
 
 const builtinHandlers = new Map<string, BuiltinHandler>();
 
@@ -15,17 +23,23 @@ export function hasBuiltin(name: string): boolean {
     return builtinHandlers.has(name);
 }
 
-// ─── Template Interpolation ───
+// Template Interpolation
 
 /**
  * Replace {{param}} with args values and {{ENV.VAR}} with env vars.
  */
-export function interpolate(template: string, vars: Record<string, unknown>): string {
-    let v = vars as Record<string, string>
-    return template.replace(/\{\{(ENV\.)?([^}]+)\}\}/g, (_, isEnv: string | undefined, key: string) => {
-        if (isEnv) return process.env[key] ?? "";
-        return v[key] ?? "";
-    });
+export function interpolate(
+    template: string,
+    vars: Record<string, unknown>,
+): string {
+    let v = vars as Record<string, string>;
+    return template.replace(
+        /\{\{(ENV\.)?([^}]+)\}\}/g,
+        (_, isEnv: string | undefined, key: string) => {
+            if (isEnv) return process.env[key] ?? "";
+            return v[key] ?? "";
+        },
+    );
 }
 
 /**
@@ -33,7 +47,8 @@ export function interpolate(template: string, vars: Record<string, unknown>): st
  */
 function interpolateObj(obj: unknown, vars: Record<string, unknown>): unknown {
     if (typeof obj === "string") return interpolate(obj, vars);
-    if (Array.isArray(obj)) return obj.map((item) => interpolateObj(item, vars));
+    if (Array.isArray(obj))
+        return obj.map((item) => interpolateObj(item, vars));
     if (obj && typeof obj === "object") {
         const result: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(obj)) {
@@ -49,14 +64,18 @@ function interpolateObj(obj: unknown, vars: Record<string, unknown>): unknown {
  */
 function getNestedValue(obj: unknown, path: string): unknown {
     return path.split(".").reduce((curr, key) => {
-        if (curr && typeof curr === "object") return (curr as Record<string, unknown>)[key];
+        if (curr && typeof curr === "object")
+            return (curr as Record<string, unknown>)[key];
         return undefined;
     }, obj);
 }
 
-// ─── HTTP Tool Executor ───
+// HTTP Tool Executor
 
-async function executeHttp(impl: HttpToolImpl, args: Record<string, unknown>): Promise<string> {
+async function executeHttp(
+    impl: HttpToolImpl,
+    args: Record<string, unknown>,
+): Promise<string> {
     const url = interpolate(impl.url, args);
 
     const headers: Record<string, string> = {};
@@ -67,7 +86,8 @@ async function executeHttp(impl: HttpToolImpl, args: Record<string, unknown>): P
     let body: string | undefined;
     if (impl.bodyTemplate && impl.method !== "GET") {
         body = JSON.stringify(interpolateObj(impl.bodyTemplate, args));
-        if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+        if (!headers["Content-Type"])
+            headers["Content-Type"] = "application/json";
     }
 
     const res = await fetch(url, {
@@ -95,19 +115,25 @@ async function executeHttp(impl: HttpToolImpl, args: Record<string, unknown>): P
     if (impl.responseMapping) {
         const extracted = getNestedValue(data, impl.responseMapping);
         if (extracted === undefined) return JSON.stringify(data);
-        return typeof extracted === "string" ? extracted : JSON.stringify(extracted);
+        return typeof extracted === "string"
+            ? extracted
+            : JSON.stringify(extracted);
     }
 
     // Template-based response
     if (impl.responseTemplate) {
-        const responseStr = typeof data === "string" ? data : JSON.stringify(data);
-        return interpolate(impl.responseTemplate, { ...args, __response__: responseStr });
+        const responseStr =
+            typeof data === "string" ? data : JSON.stringify(data);
+        return interpolate(impl.responseTemplate, {
+            ...args,
+            __response__: responseStr,
+        });
     }
 
     return typeof data === "string" ? data : JSON.stringify(data);
 }
 
-// ─── Generic Tool Executor ───
+//  Generic Tool Executor
 
 export async function executeDynamicTool(
     name: string,
@@ -139,7 +165,9 @@ export async function executeImpl(
             case "builtin": {
                 const handler = builtinHandlers.get(impl.handler);
                 if (!handler) {
-                    return { msg: `Builtin handler "${impl.handler}" not registered.` };
+                    return {
+                        msg: `Builtin handler "${impl.handler}" not registered.`,
+                    };
                 }
                 return handler(args, session);
             }

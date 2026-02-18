@@ -7,6 +7,7 @@ export * from "./builtins";
 export * from "./store";
 export * from "./tools";
 export * from "./agent";
+export * from "./handler";
 export * from "./server";
 export * from "./ws";
 export * from "./audio";

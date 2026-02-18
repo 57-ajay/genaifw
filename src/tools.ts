@@ -3,22 +3,14 @@ import type {
     ToolDeclaration,
     ToolFn,
     KBEntry,
-    MatchedAction,
     Session,
     ToolResult,
 } from "./types";
 import { searchKnowledgeBase, getFeatureDetail } from "./store";
-import {
-    getToolDeclarationsByNames,
-    getToolConfig,
-    getAllUIActions,
-} from "./registry";
+import { getToolDeclarationsByNames, getToolConfig } from "./registry";
 import { executeDynamicTool } from "./executor";
 
-export const RESPOND_TOOL = "respondToUser";
-
-// ─── Framework Tool Declarations (always available) ───
-
+//  Framework Tool Declarations
 const frameworkDeclarations: Record<string, ToolDeclaration> = {
     fetchKnowledgeBase: {
         name: "fetchKnowledgeBase",
@@ -37,94 +29,98 @@ const frameworkDeclarations: Record<string, ToolDeclaration> = {
             required: ["query"],
         },
     },
+
     fetchFeaturePrompt: {
         name: "fetchFeaturePrompt",
         description:
-            "Get full instructions and tools for a feature. Call with featureName from KB results.",
+            "Load full instructions and tools for a feature. Call with exact featureName from KB results.",
         parameters: {
             type: Type.OBJECT,
             properties: {
                 featureName: {
                     type: Type.STRING,
-                    description: "Exact featureName from KB",
+                    description: "Exact featureName from KB result",
                 },
             },
             required: ["featureName"],
         },
     },
+
     playPredefineAudioInApp: {
         name: "playPredefineAudioInApp",
         description:
-            "Get full instructions and tools for a feature. Call with featureName from KB results.",
+            "Play a predefined audio clip in the app by its key name (e.g. greeting, thank_you).",
         parameters: {
             type: Type.OBJECT,
             properties: {
-                audioName: {
+                audioKey: {
                     type: Type.STRING,
-                    description: "play a predefined audio in the app",
+                    description: "Key name of the predefined audio to play",
                 },
             },
-            required: ["audioName"],
+            required: ["audioKey"],
         },
     },
+
     playCustomAudioInApp: {
         name: "playCustomAudioInApp",
         description:
-            "Get full instructions and tools for a feature. Call with featureName from KB results.",
+            "Speak a custom Hinglish message to the user via text-to-speech. " +
+            "This is your VOICE — call it every turn to talk to the user.",
         parameters: {
             type: Type.OBJECT,
             properties: {
-                audioText: {
+                text: {
                     type: Type.STRING,
-                    description: "play a custom audio from text in the app",
+                    description: "Hinglish text to speak aloud (1-2 sentences)",
                 },
             },
-            required: ["audioText"],
+            required: ["text"],
         },
     },
+
     changeScreenInApp: {
         name: "changeScreenInApp",
-        description: "to change screen in app with optional predefined data",
+        description:
+            "Navigate the app to a different screen, optionally passing data to pre-fill the screen.",
         parameters: {
             type: Type.OBJECT,
             properties: {
-                screenName: {
+                screen: {
                     type: Type.STRING,
-                    description:
-                        "name of the screen where to want to redirect in app",
+                    description: "Target screen name",
                 },
-                predefindData: {
+                data: {
                     type: Type.OBJECT,
-                    description:
-                        "user's provided data that is mention in instruction",
+                    description: "Data to pass to the target screen",
                 },
             },
-            required: ["screenName"],
+            required: ["screen"],
         },
     },
+
     uiActionInApp: {
         name: "uiActionInApp",
         description:
-            "to patch a ui action in app with optional predefined data",
+            "Perform a UI action in the app (fill forms, tap buttons, toggle settings). " +
+            "Pass the action name and any associated data as instructed by the feature prompt.",
         parameters: {
             type: Type.OBJECT,
             properties: {
-                uiAction: {
+                action: {
                     type: Type.STRING,
-                    description: "action that we want to patch inside ",
+                    description: "UI action identifier",
                 },
-                predefindData: {
+                data: {
                     type: Type.OBJECT,
                     description:
-                        "user's provided data that is mention in instruction",
+                        "Data for the action (fields described in feature instructions)",
                 },
             },
-            required: ["uiAction"],
+            required: ["action"],
         },
     },
 };
-
-// ─── Framework Tool Implementations ───
 
 function formatKBResults(entries: KBEntry[]): string {
     if (!entries.length) return "No relevant info found in knowledge base.";
@@ -147,61 +143,81 @@ const frameworkImplementations: Record<string, ToolFn> = {
             | undefined;
         if (feat && feat.featureName !== session.activeFeature) {
             session.activeFeature = null;
-            session.matchedAction = null;
         }
         return { msg: formatKBResults(results) };
     },
-    fetchFeaturePrompt: async (args, session) => {
-        const name = args["featureName"] ?? "";
-        const detail = await getFeatureDetail(name as string);
+
+    fetchFeaturePrompt: async (args, _session) => {
+        const name = (args["featureName"] ?? "") as string;
+        const detail = await getFeatureDetail(name);
         if (!detail) return { msg: `Feature "${name}" not found.` };
 
-        // Set matched action with ALL possible actions for this feature
-        session.matchedAction = {
-            actions: detail.actions.map((a) => a.uiAction),
-            dataSchema: detail.dataSchema,
-        };
+        const actionList = detail.actions.map((a) => a.uiAction).join(", ");
+        const schemaProps = (detail.dataSchema as Record<string, unknown>)
+            ?.properties;
+        const dataFields = schemaProps
+            ? Object.entries(
+                  schemaProps as Record<string, Record<string, unknown>>,
+              )
+                  .map(
+                      ([k, v]) =>
+                          `${k}: ${v?.description ?? k}${v?.nullable ? " (optional)" : ""}`,
+                  )
+                  .join(", ")
+            : "";
+
+        const instructions = [
+            detail.prompt,
+            "",
+            `Use uiActionInApp with one of these actions: [${actionList}]`,
+            `Default action: "${detail.defaultAction}"`,
+            dataFields ? `Include in data: { ${dataFields} }` : "",
+        ]
+            .filter(Boolean)
+            .join("\n");
 
         return {
-            msg: detail.prompt,
+            msg: instructions,
             addTools: detail.tools.map((t) => t.name),
-            featureName: name as string,
+            featureName: name,
         };
     },
-    playPredefineAudioInApp: async (args, session) => {
+
+    playPredefineAudioInApp: async (args) => {
+        const key = (args["audioKey"] ?? "") as string;
         return {
-            audioName: args.audioName as string,
-            msg: "predefined audio is playing in app",
+            msg: `Predefined audio "${key}" is playing.`,
+            actions: [{ type: "playAudio" as const, key }],
         };
     },
-    playCustomAudioInApp: async (args, session) => {
+
+    playCustomAudioInApp: async (args) => {
+        const text = (args["text"] ?? "") as string;
         return {
-            audioText: args.audioText as string,
-            msg: "custom audio is playing in app",
+            msg: "Speaking to user.",
+            actions: [{ type: "speak" as const, text }],
         };
     },
-    changeScreenInApp: async (args, session) => {
+
+    changeScreenInApp: async (args) => {
+        const screen = (args["screen"] ?? "") as string;
+        const data = args["data"] as Record<string, unknown> | undefined;
         return {
-            screenName: args.screenName as string,
-            predefindData: args.predefindData as Record<string, unknown>,
-            msg: "changed app screen to " + args.screenName,
+            msg: `Navigating to screen "${screen}".`,
+            actions: [{ type: "navigate" as const, screen, data }],
         };
     },
-    uiActionInApp: async (args, session) => {
+
+    uiActionInApp: async (args) => {
+        const action = (args["action"] ?? "") as string;
+        const data = args["data"] as Record<string, unknown> | undefined;
         return {
-            uiAction: args.uiAction as string,
-            predefindData: args.predefindData as Record<string, unknown>,
-            msg: args.uiAction + " is happened in app",
+            msg: `UI action "${action}" dispatched.`,
+            actions: [{ type: "uiAction" as const, action, data }],
         };
     },
 };
 
-// ─── Public API ───
-
-/**
- * Get tool declarations by names.
- * Checks framework tools first, then registry (dynamic tools).
- */
 export function getDeclarations(names: string[]): ToolDeclaration[] {
     const result: ToolDeclaration[] = [];
     for (const n of names) {
@@ -210,23 +226,16 @@ export function getDeclarations(names: string[]): ToolDeclaration[] {
             result.push(fw);
             continue;
         }
-        // Dynamic tools from registry
         const fromRegistry = getToolDeclarationsByNames([n]);
         result.push(...fromRegistry);
     }
     return result;
 }
 
-/**
- * Resolve and execute a tool by name.
- * Checks framework tools first, then dynamic (registry + executor).
- */
 export function getTool(name: string): ToolFn | undefined {
-    // Framework tool?
     const fw = frameworkImplementations[name];
     if (fw) return fw;
 
-    // Dynamic tool from registry?
     const config = getToolConfig(name);
     if (config) {
         return (
@@ -238,47 +247,6 @@ export function getTool(name: string): ToolFn | undefined {
     return undefined;
 }
 
-/**
- * Check if a tool declaration exists (framework or dynamic).
- */
 export function hasDeclaration(name: string): boolean {
     return name in frameworkDeclarations || !!getToolConfig(name);
-}
-
-/**
- * Build the respondToUser tool declaration.
- * Constrains action_type to matched feature's actions or all registered actions.
- */
-export function buildRespondTool(
-    matched: MatchedAction | null,
-): ToolDeclaration {
-    const actionEnum = matched?.actions?.length
-        ? matched.actions
-        : getAllUIActions();
-    const dataSchema = matched?.dataSchema ?? {
-        type: Type.OBJECT,
-        properties: {},
-    };
-
-    return {
-        name: "respondToUser",
-        description:
-            "Send your final Hinglish response and UI action to the user. Call exactly once to finish every turn.",
-        parameters: {
-            type: Type.OBJECT,
-            properties: {
-                response: {
-                    type: Type.STRING,
-                    description: "Concise Hinglish response (1-2 sentences)",
-                },
-                action_type: {
-                    type: Type.STRING,
-                    enum: actionEnum,
-                    description: "UI action for client",
-                },
-                action_data: dataSchema,
-            },
-            required: ["response", "action_type", "action_data"],
-        },
-    };
 }

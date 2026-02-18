@@ -1,6 +1,6 @@
 import type { FeatureDetail, ToolDeclaration, ToolConfig } from "./types";
 
-// ─── Runtime Registry (rebuilt on startup + dashboard writes) ───
+//  Runtime Registry (rebuilt on startup + dashboard writes)
 
 export interface RuntimeRegistry {
     features: Map<string, FeatureDetail>;
@@ -20,16 +20,19 @@ const registry: RuntimeRegistry = {
     allUIActions: [],
 };
 
-// ─── Default system actions (always available even with no features) ───
+//  Default system actions (always available even with no features)
 
 const SYSTEM_ACTIONS: Array<{ uiAction: string; intent: string }> = [
     { uiAction: "entry", intent: "entry" },
     { uiAction: "none", intent: "generic" },
 ];
 
-// ─── Rebuild from feature list ───
+//  Rebuild from feature list
 
-export function rebuildRegistry(features: FeatureDetail[], baseAudioMap?: Record<string, string | null>): void {
+export function rebuildRegistry(
+    features: FeatureDetail[],
+    baseAudioMap?: Record<string, string | null>,
+): void {
     registry.features.clear();
     registry.declarations.clear();
     registry.toolConfigs.clear();
@@ -83,15 +86,16 @@ export function rebuildRegistry(features: FeatureDetail[], baseAudioMap?: Record
 
     console.log(
         `[Registry] rebuilt: ${registry.features.size} features, ` +
-        `${registry.declarations.size} tools, ` +
-        `${registry.actionToIntent.size} actions, ` +
-        `${registry.audioMap.size} audio mappings`,
+            `${registry.declarations.size} tools, ` +
+            `${registry.actionToIntent.size} actions, ` +
+            `${registry.audioMap.size} audio mappings`,
     );
 }
 
-// ─── Getters ───
-
-export function getFeatureFromRegistry(name: string): FeatureDetail | undefined {
+// Getters
+export function getFeatureFromRegistry(
+    name: string,
+): FeatureDetail | undefined {
     return registry.features.get(name);
 }
 

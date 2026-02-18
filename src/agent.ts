@@ -1,22 +1,21 @@
 import { ai, MODEL } from "./config";
-import type { Part, Session, AgentResponse, UIActionType } from "./types";
+import type { Part, Session, ServerAction } from "./types";
 import { saveSession } from "./store";
-import { getTool, getDeclarations, buildRespondTool } from "./tools";
+import { getTool, getDeclarations } from "./tools";
 import type { FunctionCall } from "@google/genai";
 
-const RESPOND_TOOL_NAME = "respondToUser";
-
+//  System Prompt
 const SYSTEM_PROMPT = `You are RAAHI, a helpful female AI assistant that CONTROLS the CabsWale app on behalf of the user.
 You ALWAYS respond in HINGLISH (natural mix of Hindi and English). Never pure English or pure Hindi.
 Use respectful tone — "Aap" not "Tu".
 
 ## Your Role
-You are an APP CONTROL AGENT. You don't just answer questions — you take ACTION inside the app.
-When a user says something, you figure out what they need and execute it by calling tools to:
-- Speak to the user (playCustomAudioInApp / playPredefineAudioInApp)
-- Navigate screens (changeScreenInApp)
-- Perform UI actions (uiActionInApp)
-You call these tools ITERATIVELY — multiple tools in sequence as needed to fulfill the user's request.
+You are an APP CONTROL AGENT. You take ACTION inside the app by calling tools.
+When a user says something, figure out what they need and execute by calling tools:
+- playCustomAudioInApp: Speak to the user in Hinglish (your VOICE — call EVERY turn)
+- playPredefineAudioInApp: Play a predefined audio clip by key
+- changeScreenInApp: Navigate to a different screen
+- uiActionInApp: Interact with UI elements (fill forms, tap buttons, etc.)
 
 ## CabsWale Info
 - CabsWale is a travel platform for outstation trips. Drivers are chosen directly by customers.
@@ -34,32 +33,26 @@ You call these tools ITERATIVELY — multiple tools in sequence as needed to ful
 
 2. If KB result has [FEATURE] entries, call fetchFeaturePrompt with exact featureName.
 
-3. After loading feature, follow its instructions and use its tools.
+3. After loading feature, follow its instructions. Use uiActionInApp with the action name
+   and data fields specified in the feature instructions.
 
-4. EXECUTE the request by calling the appropriate combination of tools:
-   a) Use playCustomAudioInApp to SPEAK your Hinglish response to the user (this replaces text responses).
-   b) Use changeScreenInApp to navigate when the user needs a different screen.
-   c) Use uiActionInApp to interact with UI elements (fill forms, tap buttons, toggle settings, etc.).
-   d) Use playPredefineAudioInApp for standard audio cues (success sounds, alerts, etc.).
+4. ALWAYS call playCustomAudioInApp to verbally respond. Then chain additional tools as needed.
+   Example:
+   - User says "Mujhe Delhi se Jaipur duty chahiye"
+   → playCustomAudioInApp(text="Bilkul, Delhi se Jaipur ki duties dhund rahi hoon!")
+   → uiActionInApp(action="show_duties_list", data={ from_city: "Delhi", to_city: "Jaipur" })
 
-   You MUST call at least playCustomAudioInApp to verbally respond every turn.
-   Then chain additional tools as needed. Example flow:
-   - User says "Mujhe Delhi se Jaipur booking karni hai"
-   → playCustomAudioInApp("Bilkul, aapki Delhi se Jaipur ki booking set karti hoon!")
-   → changeScreenInApp("booking", { from_city: "Delhi", to_city: "Jaipur" })
-
-## Response Rules
-- NEVER respond with plain text only. ALWAYS act through tools.
-- playCustomAudioInApp is your voice — call it every turn to talk to the user.
-- Chain multiple tool calls in one turn when the action requires it.
-- Be concise in audio text — 1-2 sentences max.
-- For multiple destination cities, extract ONLY the first city as to_city.
+## Rules
+- NEVER respond with plain text only. ALWAYS use tools.
+- playCustomAudioInApp is your voice — call it every turn.
+- Be concise — 1-2 sentences max.
 - NEVER skip fetchFeaturePrompt when a [FEATURE] is found.
-- If the user already provided info, don't ask again — use it directly in tool calls.
-- If a feature prompt tells you to call a tool, call it immediately.
+- If user already provided info, don't ask again — use it directly.
 
 ## Fallback
-If user asks something outside your features, call playCustomAudioInApp with a helpful Hinglish message suggesting they contact CabsWale support.`;
+NOTE: If user asks something which is not in KB(knowledge base) do following:
+  If user asks something outside your features, call playCustomAudioInApp with a helpful Hinglish
+  message suggesting they contact CabsWale support.`;
 
 function buildSystemPrompt(session: Session): string {
     const parts: string[] = [];
@@ -125,6 +118,7 @@ function buildSystemPrompt(session: Session): string {
     return `${SYSTEM_PROMPT}\n\n## Current Context\n${parts.join("\n")}`;
 }
 
+//  Agent Loop
 export const BASE_TOOLS = [
     "fetchKnowledgeBase",
     "fetchFeaturePrompt",
@@ -133,39 +127,33 @@ export const BASE_TOOLS = [
     "changeScreenInApp",
     "uiActionInApp",
 ];
+
 const MAX_DEPTH = 15;
 
-export async function resolve(
-    session: Session,
-    onTextChunk?: (chunk: string) => void,
-): Promise<AgentResponse> {
-    const response: AgentResponse = {
-        audioText: "",
-        audioName: "",
-        screenName: "",
-        uiAction: "",
-        predefindData: null,
-    };
-    return loop(session, 0, response, onTextChunk);
+/**
+ * Run the agent loop. Returns an ordered array of ServerActions
+ * collected from tool calls during the conversation turn.
+ */
+export async function resolve(session: Session): Promise<ServerAction[]> {
+    const actions: ServerAction[] = [];
+    await loop(session, 0, actions);
+    return actions;
 }
 
 async function loop(
     session: Session,
     depth: number,
-    response: AgentResponse,
-    onTextChunk?: (chunk: string) => void,
-): Promise<AgentResponse> {
+    actions: ServerAction[],
+): Promise<void> {
     try {
         if (depth >= MAX_DEPTH) {
-            response.audioName = "";
-            return response;
+            console.warn(
+                `[Agent] Max depth (${MAX_DEPTH}) reached for session ${session.id}`,
+            );
+            return;
         }
 
-        const respondDecl = buildRespondTool(session.matchedAction);
-        const toolDecls = [
-            ...getDeclarations(session.activeTools),
-            respondDecl,
-        ];
+        const toolDecls = getDeclarations(session.activeTools);
         const systemPrompt = buildSystemPrompt(session);
 
         const stream = await ai.models.generateContentStream({
@@ -177,20 +165,18 @@ async function loop(
             },
         });
 
-        let text = "limitReachedAudio";
+        let text = "";
         let fnCall: FunctionCall | null = null;
 
         for await (const chunk of stream) {
             const parts = chunk.candidates?.[0]?.content?.parts ?? [];
             for (const p of parts) {
-                if (p.text) {
-                    text += p.text;
-                    onTextChunk?.(p.text);
-                }
+                if (p.text) text += p.text;
                 if (p.functionCall && !fnCall) fnCall = p.functionCall;
             }
         }
 
+        //  Function call -> execute tool, collect actions, recurse
         if (fnCall) {
             session.history.push({
                 role: "model",
@@ -203,57 +189,48 @@ async function loop(
                     ? (fnCall.args as Record<string, unknown>)
                     : {};
 
-            const {
-                msg,
-                addTools,
-                featureName,
-                screenName,
-                audioName,
-                uiAction,
-                predefindData,
-            } = fn
+            const result = fn
                 ? await fn(args, session)
                 : { msg: `Error: tool "${fnCall.name}" not found.` };
 
-            if (featureName) session.activeFeature = featureName;
-            if (screenName) response.screenName = screenName;
-            if (audioName) response.audioName = audioName;
-            if (uiAction) response.uiAction = uiAction;
-            if (predefindData)
-                response.predefindData = {
-                    ...response.predefindData,
-                    ...predefindData,
-                };
-            if (addTools) {
-                for (const t of addTools) {
+            // Collect actions produced by this tool
+            if (result.actions) {
+                actions.push(...result.actions);
+            }
+
+            // Update session state
+            if (result.featureName) session.activeFeature = result.featureName;
+            if (result.addTools) {
+                for (const t of result.addTools) {
                     if (!session.activeTools.includes(t))
                         session.activeTools.push(t);
                 }
             }
 
+            // Feed tool result back to model
             session.history.push({
                 role: "function",
                 parts: [
                     {
                         functionResponse: {
                             name: fnCall.name!,
-                            response: { content: msg },
+                            response: { content: result.msg },
                         },
                     },
                 ],
             });
 
             await saveSession(session);
-            return loop(session, depth + 1, response, onTextChunk);
+            return loop(session, depth + 1, actions);
         }
 
-        session.history.push({ role: "model", parts: [{ text }] });
-        session.matchedAction = null;
+        // No function call -> agent turn is done
+        if (text) {
+            session.history.push({ role: "model", parts: [{ text }] });
+        }
         await saveSession(session);
-
-        return response;
     } catch (error) {
-        console.error("error in loop", error);
+        console.error("[Agent] Error in loop:", error);
         throw error;
     }
 }
