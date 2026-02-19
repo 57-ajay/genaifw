@@ -18,13 +18,25 @@ function sendError(ws: WebSocket, error: string): void {
 }
 
 /**
+ * Attach resolved audio URLs to playAudio actions before sending.
+ * This lets the client play pre-recorded audio directly from the URL
+ * without waiting for the server to stream binary data.
+ */
+function attachAudioUrls(message: ServerMessage): ServerMessage {
+    const actions = message.actions.map((action) => {
+        if (action.type === "playAudio") {
+            const url = getAudioUrlDirect(action.key);
+            if (url) return { ...action, url };
+        }
+        return action;
+    });
+    return { ...message, actions };
+}
+
+/**
  * After sending the actions message, resolve and stream any audio.
- * Audio is derived from the actions:
- *   - "speak" actions -> TTS synthesis
- *   - "playAudio" actions -> resolve by key (URL or cached buffer)
- *
- * The client receives the actions first (for immediate UI updates),
- * then audio streams in separately.
+ * Skips streaming for playAudio actions that already have a URL attached
+ * (client handles playback directly).
  */
 async function streamActionsAudio(
     ws: WebSocket,
@@ -46,16 +58,10 @@ async function streamActionsAudio(
         }
 
         if (action.type === "playAudio" && action.key) {
-            // Check if audio URL exists — if so, client handles playback via URL
-            const url = getAudioUrlDirect(action.key);
-            if (url) {
-                // Client can play from URL, no need to stream
-                // Attach URL to the action for client convenience
-                // (Already sent in actions message, client resolves by key)
-                return;
-            }
+            // URL already attached — client plays it directly, no streaming needed
+            if (action.url) return;
 
-            // No URL — try to resolve and stream the buffer
+            // No URL — stream the buffer
             try {
                 const audioBuf = await resolveAudio(action.key, action.key);
                 streamAudio(ws, audioBuf);
@@ -101,10 +107,11 @@ async function handleMessage(ws: WebSocket, raw: string): Promise<void> {
 
     try {
         const message = await handleEvent(event);
+        const enriched = attachAudioUrls(message);
 
-        send(ws, { type: "actions", message });
+        send(ws, { type: "actions", message: enriched });
 
-        await streamActionsAudio(ws, message);
+        await streamActionsAudio(ws, enriched);
     } catch (e: unknown) {
         console.error("[WS] handleMessage error:", e);
         sendError(ws, (e as Error).message ?? "Internal error");

@@ -20,7 +20,7 @@ export interface ClientContext {
 
 export type ServerAction =
     | { type: "speak"; text: string }
-    | { type: "playAudio"; key: string }
+    | { type: "playAudio"; key: string; url?: string }
     | { type: "navigate"; screen: string; data?: Record<string, unknown> }
     | { type: "uiAction"; action: string; data?: Record<string, unknown> }
     | { type: "endConversation" };
