@@ -7,7 +7,8 @@
         "dev": "bun run src/cli.ts",
         "check": "bun x tsc --noEmit",
         "serve": "bun run src/serve.ts",
-        "serve:http": "bun run src/http.ts"
+        "serve:http": "bun run src/http.ts",
+        "wsclient": "bun run src/wsclient.ts"
     },
     "devDependencies": {
         "@types/bun": "latest",

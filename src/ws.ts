@@ -26,7 +26,7 @@ function attachAudioUrls(message: ServerMessage): ServerMessage {
     const actions = message.actions.map((action) => {
         if (action.type === "playAudio") {
             const url = getAudioUrlDirect(action.key);
-            if (url) return { ...action, url };
+            if (url) return { ...action, value: url };
         }
         return action;
     });
@@ -59,7 +59,7 @@ async function streamActionsAudio(
 
         if (action.type === "playAudio" && action.key) {
             // URL already attached — client plays it directly, no streaming needed
-            if (action.url) return;
+            if (action.value) return;
 
             // No URL — stream the buffer
             try {
