@@ -18,7 +18,7 @@ import {
     deleteKBEntryFromFirestore,
     loadAllKBFromFirestore,
 } from "./firebase";
-import { rebuildRegistry } from "./registry";
+import { rebuildRegistry, getRegistry } from "./registry";
 import { getBaseAudioMap } from "./services/audio-config";
 
 let client: RedisClientType;
@@ -319,6 +319,28 @@ export async function refreshRegistry(): Promise<void> {
     const features = await getAllFeatures();
     const baseAudio = getBaseAudioMap();
     rebuildRegistry(features, baseAudio);
+    const merged: Record<string, string | null> = {};
+    for (const [k, v] of getRegistry().audioMap) merged[k] = v;
+    await syncAudioUrls(merged);
+}
+
+//  Audio URL Redis Sync
+
+const AUDIO_URL_HASH = "audio:urls";
+
+export async function syncAudioUrls(
+    urlMap: Record<string, string | null>,
+): Promise<void> {
+    const entries: Record<string, string> = {};
+    for (const [k, v] of Object.entries(urlMap)) {
+        if (v) entries[k] = v;
+    }
+    if (Object.keys(entries).length === 0) return;
+    await client.hSet(AUDIO_URL_HASH, entries);
+}
+
+export async function getAudioUrlFromRedis(key: string): Promise<string | null> {
+    return (await client.hGet(AUDIO_URL_HASH, key)) ?? null;
 }
 
 //  Cold Start Recovery
